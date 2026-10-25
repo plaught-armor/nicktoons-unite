@@ -11,8 +11,11 @@ import "core:strconv"
 import "core:strings"
 import "core:time"
 import sdl "vendor:sdl2"
-import "ee"
-import "gs"
+import cpu "ps:ps2/cpu"
+import gs "ps:ps2/gs"
+import iop "ps:ps2/iop"
+import kernel "ps:ps2/kernel"
+import mem "ps:ps2/mem"
 import "ps:core"
 
 @(private = "file")
@@ -96,13 +99,13 @@ video_init :: proc() {
 	core.input_bind_standard()
 	core.input_bind_keys_standard()
 	if v, ok := strconv.parse_int(os.get_env("NT_PLAYERS", context.temp_allocator)); ok {
-		forced_players = clamp(v, 1, ee.MAX_PLAYERS)
-		for i in 0 ..< forced_players {ee.pads[i].connected = true}
+		forced_players = clamp(v, 1, iop.MAX_PLAYERS)
+		for i in 0 ..< forced_players {iop.pads[i].connected = true}
 	}
 	net_init()
-	ee.gs.write = gs.write
-	ee.gs.transfer = gs.transfer
-	ee.vblank_hook = video_frame
+	gs.state.write = gs.write
+	gs.state.transfer = gs.transfer
+	kernel.vblank_hook = video_frame
 	audio_init(core.headless)
 	last = time.tick_now()
 	if v, ok := os.lookup_env("NT_SHOT", context.temp_allocator); ok {
@@ -131,7 +134,7 @@ video_frame :: proc() {
 	// heard, and unpaced.
 	rerun := core.net_resimulating()
 	if core.net_hash_due() {
-		core.net_hash(xxhash.XXH3_64_with_seed(ee.iop_ram, xxhash.XXH3_64_default(ee.ram)))
+		core.net_hash(xxhash.XXH3_64_with_seed(iop.iop_ram, xxhash.XXH3_64_default(mem.ram)))
 	}
 	audio_frame(!rerun)
 	gs.skip_present = rerun
@@ -172,10 +175,10 @@ video_frame :: proc() {
 		// frame (with NT_DUMP_HASH=1, their hashes in <dir>/hashes.tsv, so two
 		// runs can be diffed for the first frame they diverge).
 		if core.dump_due(u64(frame)) {
-			cyc := ee.cpu.cycles
+			cyc := cpu.state.cycles
 			core.dump_put("cyc", "bin", u64(frame), ([^]u8)(&cyc)[:size_of(cyc)])
-			core.dump_put("ram", "bin", u64(frame), ee.ram)
-			core.dump_put("iop", "bin", u64(frame), ee.iop_ram)
+			core.dump_put("ram", "bin", u64(frame), mem.ram)
+			core.dump_put("iop", "bin", u64(frame), iop.iop_ram)
 		}
 	}
 	if net_on && vblank % 600 == 0 {print_net()}
@@ -201,20 +204,20 @@ STATS_FRAMES :: 300
 print_stats :: proc() {
 	@(static) t0: time.Tick
 	@(static) cyc0, idle0, tsc0: u64
-	@(static) prof0: [ee.Prof]u64
+	@(static) prof0: [cpu.Prof]u64
 	now := time.tick_now()
-	tsc := ee.prof_start()
+	tsc := cpu.prof_start()
 	if t0 != {} {
 		secs := time.duration_seconds(time.tick_diff(t0, now))
-		cyc, idl := ee.cpu.cycles - cyc0, ee.idle_cycles - idle0
+		cyc, idl := cpu.state.cycles - cyc0, kernel.idle_cycles - idle0
 		fmt.eprintf("stats: frame %d  %.1f fps  idle %.0f%%", frame,
 			f64(STATS_FRAMES) / secs, 100 * f64(idl) / f64(max(cyc, 1)))
-		for p in ee.Prof {
-			fmt.eprintf("  %v %.0f%%", p, 100 * f64(ee.prof[p] - prof0[p]) / f64(max(tsc - tsc0, 1)))
+		for p in cpu.Prof {
+			fmt.eprintf("  %v %.0f%%", p, 100 * f64(cpu.prof[p] - prof0[p]) / f64(max(tsc - tsc0, 1)))
 		}
 		fmt.eprintln()
 	}
-	t0, cyc0, idle0, tsc0, prof0 = now, ee.cpu.cycles, ee.idle_cycles, tsc, ee.prof
+	t0, cyc0, idle0, tsc0, prof0 = now, cpu.state.cycles, kernel.idle_cycles, tsc, cpu.prof
 }
 
 // NT_SNAPTEST=<save>,<load>: save state at presented frame <save>, load it
@@ -287,7 +290,7 @@ forced_players: int
 @(private = "file")
 input_poll :: proc() {
 	ps := core.input_poll(u64(frame))
-	inputs: [ee.MAX_PLAYERS]core.Net_Input
+	inputs: [iop.MAX_PLAYERS]core.Net_Input
 	for &in_, i in inputs {
 		p := ps[i]
 		in_.buttons = p.buttons
@@ -315,9 +318,9 @@ input_poll :: proc() {
 			fmt.eprintln("net: session over")
 			os.exit(1)
 		}
-		copy(inputs[:], got[:ee.MAX_PLAYERS])
+		copy(inputs[:], got[:iop.MAX_PLAYERS])
 	}
-	for &pad, i in ee.pads {
+	for &pad, i in iop.pads {
 		pad.connected = net_on ? i < NET_PLAYERS : ps[i].connected || i < forced_players
 		pad.buttons = inputs[i].buttons
 		pad.axes = inputs[i].axes

@@ -5,7 +5,10 @@ package main
 import "core:fmt"
 import "core:path/filepath"
 import "core:os"
-import "ee"
+import "ps:ps2"
+import cpu "ps:ps2/cpu"
+import iop "ps:ps2/iop"
+import mem "ps:ps2/mem"
 import "rec"
 
 ELF_PATH :: "../disc/SLUS_212.84"
@@ -37,7 +40,7 @@ load_elf :: proc(path: string) -> u32 {
 		if le32(data, p) != 1 {continue} // PT_LOAD
 		off, vaddr := int(le32(data, p + 4)), le32(data, p + 8)
 		filesz, memsz := le32(data, p + 16), le32(data, p + 20)
-		dst := ee.ram_slice(vaddr, memsz)
+		dst := mem.ram_slice(vaddr, memsz)
 		copy(dst, data[off:][:filesz])
 		for &b in dst[filesz:] {b = 0}
 	}
@@ -46,11 +49,11 @@ load_elf :: proc(path: string) -> u32 {
 
 main :: proc() {
 	path := len(os.args) > 1 ? os.args[1] : ELF_PATH
-	ee.disc_dir = filepath.dir(path)
-	ee.init()
+	iop.disc_dir = filepath.dir(path)
+	ps2.init()
 	video_init()
 	rec.register_all()
 	entry := load_elf(path)
-	ee.cpu.r[29].d[0] = ee.RAM_SIZE - 16
-	ee.run(entry)
+	cpu.state.r[29].d[0] = mem.RAM_SIZE - 16
+	ps2.run(entry)
 }

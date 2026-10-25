@@ -6,16 +6,17 @@ package main
 
 import "core:os"
 import "ps:core"
-import "ee"
+import cpu "ps:ps2/cpu"
+import iop "ps:ps2/iop"
 
-AUDIO_FRAME :: ee.MIX_RATE / 60 // stereo frames per vblank
+AUDIO_FRAME :: iop.MIX_RATE / 60 // stereo frames per vblank
 @(private = "file")
 LATENCY_MS :: 50
 
 audio_init :: proc(headless: bool) {
 	wav, _ := os.lookup_env("NT_WAV", context.temp_allocator)
 	// Headless runs are unpaced: a device queue would drop the mix.
-	core.audio_init(ee.MIX_RATE, wav, !headless)
+	core.audio_init(iop.MIX_RATE, wav, !headless)
 	if !headless {core.audio_apply(LATENCY_MS)}
 }
 
@@ -24,9 +25,9 @@ audio_init :: proc(headless: bool) {
 // device side instead. A netplay rerun mixes without pushing.
 audio_frame :: proc(push: bool) {
 	buf := make([][2]i16, AUDIO_FRAME, context.temp_allocator)
-	t := ee.prof_start()
-	ee.fmod_mix(([^]i16)(raw_data(buf))[:AUDIO_FRAME * 2])
-	ee.spu_mix(([^]i16)(raw_data(buf))[:AUDIO_FRAME * 2])
-	ee.prof_end(.MIX, t)
+	t := cpu.prof_start()
+	iop.fmod_mix(([^]i16)(raw_data(buf))[:AUDIO_FRAME * 2])
+	iop.spu_mix(([^]i16)(raw_data(buf))[:AUDIO_FRAME * 2])
+	cpu.prof_end(.MIX, t)
 	if push {core.audio_push(buf)}
 }
