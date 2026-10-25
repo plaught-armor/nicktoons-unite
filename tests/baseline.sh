@@ -46,7 +46,9 @@ run() {
 	rm -rf "$dir"
 	mkdir -p "$dir/mc"
 	echo "run $name" >&2
-	(cd "$dir" && env NT_MC="$dir/mc" NT_HEADLESS=1 "$@" "$BIN" > run.log 2>&1)
+	# Ignore every real controller: a connected pad would merge with NT_PRESS input.
+	(cd "$dir" && env NT_MC="$dir/mc" NT_HEADLESS=1 SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0000/0x0000 \
+		"$@" "$BIN" > run.log 2>&1)
 }
 
 # same A B LABEL: byte compare, report, count failures.
