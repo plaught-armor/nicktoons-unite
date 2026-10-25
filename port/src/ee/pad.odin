@@ -13,10 +13,7 @@ import "ps:core"
 
 // Host input in PS2 wire order: buttons are the active-high form of pad
 // data bytes 2..3 (byte 2 in the low half), axes are rx, ry, lx, ly.
-Pad_Button :: enum u16 {
-	Select, L3, R3, Start, Up, Right, Down, Left,
-	L2, R2, L1, R1, Triangle, Circle, Cross, Square,
-}
+Pad_Button :: core.Pad_Button
 
 MAX_PLAYERS :: 4
 

@@ -3,8 +3,8 @@
 package main
 
 import "core:fmt"
+import "core:math"
 import "core:os"
-import "core:reflect"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
@@ -32,19 +32,10 @@ shots: [dynamic]int // NT_SHOT=<frame>,...: write shot_<frame>.ppm at each, asce
 next_shot: int // index into shots
 @(private = "file")
 SHOT_WARMUP :: 10 // frames drawn before a headless shot, to fill both buffers
-@(private = "file")
-Press :: struct {
-	frame:  int,
-	hold:   int,
-	btn:    ee.Pad_Button,
-	player: int,
-}
 // NT_PRESS=Start@600,Cross@900: scripted taps, held for PRESS_FRAMES, so a
 // headless run can get past the title screen. A ":n" suffix (Start@900:2)
 // presses on player n instead of player 1, a "+n" suffix (Left@900+120)
-// holds for n frames.
-@(private = "file")
-presses: [dynamic]Press
+// holds for n frames (core.input_script_load).
 @(private = "file")
 PRESS_FRAMES :: 6
 
@@ -94,13 +85,14 @@ video_init :: proc() {
 	}
 	gs.snap_regions(core.snap_add_bytes)
 	if hw {append(&core.snap_hooks, core.Snap_Hook{gs.hw_snap_save, gs.hw_snap_load})}
-	// Community mappings for pads SDL does not know (gamecontrollerdb.txt).
+	// Also loads community mappings for pads SDL does not know
+	// (gamecontrollerdb.txt).
+	core.input_init(false)
+	core.input_bind_standard()
+	core.input_bind_keys_standard()
 	if v, ok := strconv.parse_int(os.get_env("NT_PLAYERS", context.temp_allocator)); ok {
 		forced_players = clamp(v, 1, ee.MAX_PLAYERS)
 		for i in 0 ..< forced_players {ee.pads[i].connected = true}
-	}
-	if os.exists("gamecontrollerdb.txt") {
-		_ = sdl.GameControllerAddMappingsFromFile("gamecontrollerdb.txt")
 	}
 	ee.gs.write = gs.write
 	ee.gs.transfer = gs.transfer
@@ -114,24 +106,7 @@ video_init :: proc() {
 		slice.sort(shots[:])
 	}
 	shot_skip_update()
-	if v, ok := os.lookup_env("NT_PRESS", context.temp_allocator); ok {
-		for item in strings.split(v, ",", context.temp_allocator) {
-			name, _, rest := strings.partition(item, "@")
-			timing, colon, who := strings.partition(rest, ":")
-			at, plus, dur := strings.partition(timing, "+")
-			btn, bok := reflect.enum_from_name(ee.Pad_Button, name)
-			f, fok := strconv.parse_int(at)
-			player, pok := 1, true
-			if colon != "" {player, pok = strconv.parse_int(who)}
-			hold, hok := PRESS_FRAMES, true
-			if plus != "" {hold, hok = strconv.parse_int(dur)}
-			if !bok || !fok || !pok || !hok || hold < 1 || player < 1 || player > ee.MAX_PLAYERS {
-				fmt.eprintfln("NT_PRESS: bad entry \"%s\"", item)
-				continue
-			}
-			append(&presses, Press{f, hold, btn, player - 1})
-		}
-	}
+	_ = core.input_script_load(PRESS_FRAMES)
 }
 
 video_frame :: proc() {
@@ -140,14 +115,9 @@ video_frame :: proc() {
 	free_all(context.temp_allocator)
 	ev: sdl.Event
 	for sdl.PollEvent(&ev) {
-		#partial switch ev.type {
-		case .QUIT: os.exit(0)
-		case .CONTROLLERDEVICEADDED:
-			// Also fires at startup for pads already plugged in.
-			controller_add(ev.cdevice.which)
-		case .CONTROLLERDEVICEREMOVED:
-			controller_remove(sdl.JoystickID(ev.cdevice.which))
-		}
+		if ev.type == .QUIT {os.exit(0)}
+		// Hotplug; also fires at startup for pads already plugged in.
+		core.input_event(ev)
 	}
 	input_poll()
 	audio_frame()
@@ -283,111 +253,23 @@ shot_skip_update :: proc() {
 	gs.skip_draw = core.headless && (next_shot >= len(shots) || frame < shots[next_shot] - SHOT_WARMUP)
 }
 
-// One controller per player; a player keeps their slot until the pad is
-// unplugged, and a new pad takes the lowest free slot. The keyboard and
-// NT_PRESS always feed player 1.
-@(private = "file")
-controllers: [ee.MAX_PLAYERS]^sdl.GameController
-
-// Last rumble sent per player, re-sent before SDL's duration runs out.
-@(private = "file")
-rumble: [ee.MAX_PLAYERS]struct {
-	small, large: u8,
-	at:           u64,
-}
-@(private = "file")
-RUMBLE_MS :: 1000
-
-@(private = "file")
-controller_add :: proc(device: i32) {
-	id := sdl.JoystickGetDeviceInstanceID(device)
-	for c in controllers {
-		if c != nil && sdl.JoystickInstanceID(sdl.GameControllerGetJoystick(c)) == id {return}
-	}
-	for &c, i in controllers {
-		if c != nil {continue}
-		c = sdl.GameControllerOpen(device)
-		if c == nil {return}
-		sdl.GameControllerSetPlayerIndex(c, i32(i)) // player LEDs where the pad has them
-		rumble[i] = {}
-		ee.pads[i].connected = true
-		fmt.eprintfln("input: player %d: %s", i + 1, sdl.GameControllerName(c))
-		return
-	}
-	fmt.eprintln("input: ignoring controller, all players taken:", sdl.GameControllerNameForIndex(device))
-}
-
-@(private = "file")
-controller_remove :: proc(id: sdl.JoystickID) {
-	for &c, i in controllers {
-		if c == nil || sdl.JoystickInstanceID(sdl.GameControllerGetJoystick(c)) != id {continue}
-		sdl.GameControllerClose(c)
-		c = nil
-		ee.pads[i].connected = i == 0 || i < forced_players
-		ee.pads[i].buttons = {}
-		ee.pads[i].axes = {0x80, 0x80, 0x80, 0x80}
-		fmt.eprintfln("input: player %d unplugged", i + 1)
-	}
-}
-
 // NT_PLAYERS=n: players 1..n count as plugged in without a controller, so
 // headless runs can exercise the multitap.
 @(private = "file")
 forced_players: int
 
-// Keyboard: arrows, Z cross, X circle, A square, S triangle, Return start,
-// right shift select, Q/W L1/R1, 1/2 L2/R2. A game controller adds to that.
-@(private = "file")
-KEYS := [?]struct {
-	key: sdl.Scancode,
-	btn: ee.Pad_Button,
-}{
-	{.UP, .Up}, {.DOWN, .Down}, {.LEFT, .Left}, {.RIGHT, .Right},
-	{.Z, .Cross}, {.X, .Circle}, {.A, .Square}, {.S, .Triangle},
-	{.RETURN, .Start}, {.RSHIFT, .Select}, {.Q, .L1}, {.W, .R1}, {.NUM1, .L2}, {.NUM2, .R2},
-}
-
-@(private = "file")
-BUTTONS := [?]struct {
-	b:   sdl.GameControllerButton,
-	btn: ee.Pad_Button,
-}{
-	{.DPAD_UP, .Up}, {.DPAD_DOWN, .Down}, {.DPAD_LEFT, .Left}, {.DPAD_RIGHT, .Right},
-	{.A, .Cross}, {.B, .Circle}, {.X, .Square}, {.Y, .Triangle},
-	{.START, .Start}, {.BACK, .Select}, {.LEFTSHOULDER, .L1}, {.RIGHTSHOULDER, .R1},
-	{.LEFTSTICK, .L3}, {.RIGHTSTICK, .R3},
-}
-
+// Controllers, keyboard and NT_PRESS (core input.odin) to the emulated pads:
+// a controller per player, keeping its slot until unplugged; the keyboard
+// feeds player 1. Motors follow the game's SetActDirect levels.
 @(private = "file")
 input_poll :: proc() {
-	keys := sdl.GetKeyboardState(nil)
-	now := u64(sdl.GetTicks())
-	for c, i in controllers {
-		pad := &ee.pads[i]
-		set: bit_set[ee.Pad_Button; u16]
-		axes := [4]u8{0x80, 0x80, 0x80, 0x80}
-		if i == 0 {
-			for k in KEYS {if keys[k.key] != 0 {set += {k.btn}}}
-		}
-		if c != nil {
-			for b in BUTTONS {if sdl.GameControllerGetButton(c, b.b) != 0 {set += {b.btn}}}
-			if sdl.GameControllerGetAxis(c, .TRIGGERLEFT) > 16384 {set += {.L2}}
-			if sdl.GameControllerGetAxis(c, .TRIGGERRIGHT) > 16384 {set += {.R2}}
-			STICKS := [4]sdl.GameControllerAxis{.RIGHTX, .RIGHTY, .LEFTX, .LEFTY}
-			for a, j in STICKS {
-				axes[j] = u8((i32(sdl.GameControllerGetAxis(c, a)) + 32768) >> 8)
-			}
-			// Large motor: low-frequency rumble at the game's speed; small
-			// motor: high-frequency, on or off.
-			r := &rumble[i]
-			on := pad.small != 0 || pad.large != 0
-			if pad.small != r.small || pad.large != r.large || (on && now - r.at > RUMBLE_MS / 2) {
-				r.small, r.large, r.at = pad.small, pad.large, now
-				_ = sdl.GameControllerRumble(c, u16(pad.large) * 257, 0xffff if pad.small != 0 else 0, RUMBLE_MS)
-			}
-		}
-		for p in presses {
-			if p.player == i && frame >= p.frame && frame < p.frame + p.hold {set += {p.btn}}
+	ps := core.input_poll(u64(frame))
+	for &pad, i in ee.pads {
+		p := ps[i]
+		set := p.buttons
+		axes: [4]u8
+		for f, j in ([4]f32{p.right.x, p.right.y, p.left.x, p.left.y}) {
+			axes[j] = u8((i32(math.round(f * 32767)) + 32768) >> 8)
 		}
 		// The game walks with the left stick only, so d-pad presses (from
 		// the keyboard and NT_PRESS too) push it unless the stick is held.
@@ -399,8 +281,10 @@ input_poll :: proc() {
 			if .Up in set {axes[3] = 0x00}
 			if .Down in set {axes[3] = 0xff}
 		}
+		pad.connected = p.connected || i < forced_players
 		pad.buttons = set
 		pad.axes = axes
+		core.input_rumble(i, pad.small != 0, pad.large)
 	}
 }
 
