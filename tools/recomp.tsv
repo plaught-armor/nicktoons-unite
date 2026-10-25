@@ -1,0 +1,7 @@
+key	value
+backend	r5900
+exe	disc/SLUS_212.84
+out	port/src/rec
+runtime	../ee
+cycles_per_insn	1
+package_insns	40000
