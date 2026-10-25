@@ -29,6 +29,8 @@ hw: bool // the Vulkan GS draws and presents
 @(private = "file")
 last: time.Tick
 @(private = "file")
+pace := 60 // frames a second; 0 for unpaced
+@(private = "file")
 frame: int
 @(private = "file")
 shots: [dynamic]int // NT_SHOT=<frame>,...: write shot_<frame>.ppm at each, ascending
@@ -54,6 +56,9 @@ video_init :: proc() {
 	// NT_HEADLESS=1: no window, no 60 Hz pacing, no controllers.
 	core.headless_init()
 	stats = os.get_env("NT_STATS", context.temp_allocator) == "1"
+	// NT_PACE=<hz> paces a headless run too (netplay tests; a different
+	// rate on each peer stands in for clock drift).
+	if core.headless {pace = strconv.parse_int(os.get_env("NT_PACE", context.temp_allocator)) or_else 0}
 	if !core.dump_init() {os.exit(1)}
 	if v, ok := os.lookup_env("NT_SNAPTEST", context.temp_allocator); ok {
 		a, _, b := strings.partition(v, ",")
@@ -186,10 +191,12 @@ video_frame :: proc() {
 		print_net()
 		os.exit(0)
 	}
-	if core.headless || rerun {return}
-	FRAME :: time.Second / 60
+	if pace == 0 || rerun {return}
+	// Netplay time sync stretches the frame while this host is ahead.
+	length := time.Second / time.Duration(pace)
+	length += time.Duration(f64(length) * f64(core.net_stretch()))
 	el := time.tick_since(last)
-	if el < FRAME {time.sleep(FRAME - el)}
+	if el < length {time.sleep(length - el)}
 	last = time.tick_now()
 }
 
@@ -368,9 +375,9 @@ net_init :: proc() {
 @(private = "file")
 print_net :: proc() {
 	st := core.net_status()
-	fmt.eprintfln("net: vblank %d, ping %.1f ms, ahead %d, %d rollbacks (%d frames rerun), %d stalls, %d hashes compared, desync %d",
-		vblank, time.duration_milliseconds(st.ping), st.ahead, st.rollbacks, st.resimulated, st.stalls, st.hashes,
-		st.desync)
+	fmt.eprintfln("net: vblank %d, ping %.1f ms, ahead %d, offset %.1f, %d rollbacks (%d frames rerun), %d stalls, %d slowed, %d hashes compared, desync %d",
+		vblank, time.duration_milliseconds(st.ping), st.ahead, st.offset, st.rollbacks, st.resimulated, st.stalls,
+		st.slowed, st.hashes, st.desync)
 }
 
 @(private = "file")
