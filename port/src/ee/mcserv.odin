@@ -17,6 +17,7 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "ps:core"
 
 MC_PORTS :: 2
 
@@ -463,5 +464,5 @@ mc_get_ent_space :: proc(port: u32, name: string) -> i32 {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 mcserv_snap :: proc() {
-	snap_add(&mc)
+	core.snap_add(&mc)
 }

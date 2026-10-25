@@ -9,6 +9,7 @@ package ee
 
 import "core:fmt"
 import "core:os"
+import "ps:core"
 
 EE_CLOCK :: 294_912_000
 CYCLES_PER_FRAME :: EE_CLOCK * 1001 / 60000 // NTSC 59.94 Hz
@@ -48,7 +49,7 @@ Thread :: struct {
 	wakeups:    i32,
 	seq:        u64, // order of becoming ready, for FIFO within a priority
 	regs:       Cpu,
-	co:         ^Coroutine,
+	co:         ^core.Coroutine,
 }
 
 Sema :: struct {
@@ -275,7 +276,7 @@ delete_thread :: proc(id: i32) -> i64 {
 	t := thread(id)
 	if t == nil || t == k.current || t.status != .Dormant {return KE_ERROR}
 	k.threads[id] = nil
-	if t.co != nil {co_kill(t.co)}
+	if t.co != nil {core.co_kill(t.co)}
 	free(t)
 	return KE_OK
 }
@@ -304,7 +305,7 @@ start_thread :: proc(id: i32, arg: u32) -> i64 {
 	t.regs.cop0[12] = STATUS_USER
 	t.prio = t.init_prio
 	t.wakeups = 0
-	if t.co == nil {t.co = co_create(thread_main, t)}
+	if t.co == nil {t.co = core.co_create(thread_main, t)}
 	make_ready(t)
 	reschedule()
 	return KE_OK
@@ -325,7 +326,7 @@ terminate_thread :: proc(id: i32) -> i64 {
 	unwait(t)
 	t.status = .Dormant
 	// The coroutine is parked inside a syscall; drop it so a restart begins anew.
-	if t.co != nil {co_kill(t.co); t.co = nil}
+	if t.co != nil {core.co_kill(t.co); t.co = nil}
 	return KE_OK
 }
 
@@ -495,7 +496,7 @@ switch_to :: proc(next: ^Thread) {
 	cycles := cpu.cycles
 	cpu = next.regs
 	cpu.cycles = cycles
-	co_switch(next.co)
+	core.co_switch(next.co)
 }
 
 // Guest cycles skipped while every thread waits, for NT_STATS.
@@ -691,9 +692,9 @@ run_events :: proc() {
 		// Snapshots hold the state as of here, before the host's input for
 		// the frame, so a loaded one replays with whatever input the host
 		// gives it next.
-		if snap_op != .None {snap_yield()}
+		if core.snap_op != .None {core.snap_yield()}
 		{
-			context.allocator = host_allocator
+			context.allocator = core.host_allocator
 			vblank_hook()
 		}
 		pad_update()
@@ -801,6 +802,6 @@ dump_threads :: proc() {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 kernel_snap :: proc() {
-	snap_add(&k)
-	snap_add(&idle_cycles)
+	core.snap_add(&k)
+	core.snap_add(&idle_cycles)
 }

@@ -9,6 +9,7 @@
 package ee
 
 import "core:fmt"
+import "ps:core"
 
 // Host input in PS2 wire order: buttons are the active-high form of pad
 // data bytes 2..3 (byte 2 in the low half), axes are rx, ry, lx, ly.
@@ -227,8 +228,8 @@ mtap_server :: proc(fno: u32, buf: []u8, send_size: u32) -> bool {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 pad_snap :: proc() {
-	snap_add(&pad_area)
-	snap_add(&act_align)
-	snap_add(&mtap)
-	snap_add(&pad_frame)
+	core.snap_add(&pad_area)
+	core.snap_add(&act_align)
+	core.snap_add(&mtap)
+	core.snap_add(&pad_frame)
 }

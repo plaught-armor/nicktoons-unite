@@ -3,6 +3,7 @@
 package ee
 
 import "core:fmt"
+import "ps:core"
 
 INTC_GS :: 0
 INTC_SBUS :: 1
@@ -224,13 +225,13 @@ fifo_write :: proc(a: u32, v: u128) {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 hw_snap :: proc() {
-	snap_add(&hwregs)
-	snap_add(&gsregs)
-	snap_add(&intc_stat)
-	snap_add(&intc_mask)
-	snap_add(&intc_pending)
-	snap_add(&dmac_stat)
-	snap_add(&gs_csr)
-	snap_add(&gs_imr)
-	snap_add(&unmapped_seen)
+	core.snap_add(&hwregs)
+	core.snap_add(&gsregs)
+	core.snap_add(&intc_stat)
+	core.snap_add(&intc_mask)
+	core.snap_add(&intc_pending)
+	core.snap_add(&dmac_stat)
+	core.snap_add(&gs_csr)
+	core.snap_add(&gs_imr)
+	core.snap_add(&unmapped_seen)
 }

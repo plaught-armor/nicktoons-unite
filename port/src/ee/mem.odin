@@ -6,6 +6,7 @@
 package ee
 
 import "base:intrinsics"
+import "ps:core"
 
 RAM_SIZE :: 32 << 20
 SPR_BASE :: 0x70000000
@@ -22,7 +23,7 @@ ram_base: [^]u8
 fast_lim: u32
 
 mem_init :: proc() {
-	ram = snap_area(RAM_SIZE)
+	ram = core.snap_area(RAM_SIZE)
 	ram_base = raw_data(ram)
 	fast_lim = RAM_SIZE
 }
@@ -175,5 +176,5 @@ SDR :: proc(a: u32, rt: u64) {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 mem_snap :: proc() {
-	snap_add(&spr)
+	core.snap_add(&spr)
 }

@@ -10,6 +10,7 @@ package ee
 
 import "base:intrinsics"
 import "core:fmt"
+import "ps:core"
 
 @(private)
 Ipu_Mb8 :: struct {
@@ -62,7 +63,7 @@ Ipu :: struct {
 	rgb16:    [256]u16,
 	indx4:    [128]u8,
 
-	co, caller: ^Coroutine,
+	co, caller: ^core.Coroutine,
 }
 
 @(private)
@@ -105,7 +106,7 @@ ipu_write :: proc(o: u32, v: u32) {
 @(private)
 ipu_reset :: proc() {
 	if ipu.co != nil && ipu.busy {
-		co_kill(ipu.co)
+		core.co_kill(ipu.co)
 		ipu.co = nil
 	}
 	ipu.in_r, ipu.in_n, ipu.out_r, ipu.out_n = 0, 0, 0, 0
@@ -150,11 +151,11 @@ ipu_cmd_write :: proc(v: u32) {
 ipu_pump :: proc() {
 	ipu_ch3_drain()
 	ipu_in_refill()
-	if ipu.busy && co_current != ipu.co {
-		if ipu.co == nil {ipu.co = co_create(ipu_entry, nil)}
-		ipu.caller = co_current
+	if ipu.busy && core.co_current != ipu.co {
+		if ipu.co == nil {ipu.co = core.co_create(ipu_entry, nil)}
+		ipu.caller = core.co_current
 		t := prof_start()
-		co_switch(ipu.co)
+		core.co_switch(ipu.co)
 		prof_end(.IPU, t)
 	}
 }
@@ -162,7 +163,7 @@ ipu_pump :: proc() {
 // Block the running command until the IPU is pumped again.
 @(private)
 ipu_wait :: proc() {
-	co_switch(ipu.caller)
+	core.co_switch(ipu.caller)
 }
 
 @(private)
@@ -172,7 +173,7 @@ ipu_entry :: proc(_: rawptr) {
 		ipu.busy, ipu.cmd_busy, ipu.top_busy = false, false, false
 		ipu.ctrl &~= IPU_CTRL_BUSY
 		intc_raise(INTC_IPU)
-		co_switch(ipu.caller)
+		core.co_switch(ipu.caller)
 	}
 }
 
@@ -1071,5 +1072,5 @@ ipu_vq :: proc() {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 ipu_snap :: proc() {
-	snap_add(&ipu)
+	core.snap_add(&ipu)
 }

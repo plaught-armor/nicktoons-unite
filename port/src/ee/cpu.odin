@@ -7,6 +7,7 @@ package ee
 
 import "core:fmt"
 import "core:os"
+import "ps:core"
 
 // A general-purpose register: 128 bits on the R5900. Non-MMI instructions
 // only touch the low doubleword.
@@ -130,7 +131,7 @@ dump_regs :: proc() {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 cpu_snap :: proc() {
-	snap_add(&cpu)
-	snap_add(&next_event)
-	snap_add(&reported)
+	core.snap_add(&cpu)
+	core.snap_add(&next_event)
+	core.snap_add(&reported)
 }

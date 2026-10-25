@@ -3,7 +3,6 @@
 package main
 
 import "core:fmt"
-import "core:hash/xxhash"
 import "core:os"
 import "core:reflect"
 import "core:slice"
@@ -13,6 +12,7 @@ import "core:time"
 import sdl "vendor:sdl2"
 import "ee"
 import "gs"
+import "ps:core"
 
 @(private = "file")
 win: ^sdl.Window
@@ -32,8 +32,6 @@ shots: [dynamic]int // NT_SHOT=<frame>,...: write shot_<frame>.ppm at each, asce
 next_shot: int // index into shots
 @(private = "file")
 SHOT_WARMUP :: 10 // frames drawn before a headless shot, to fill both buffers
-@(private = "file")
-headless: bool // NT_HEADLESS=1: no window, no 60 Hz pacing
 @(private = "file")
 Press :: struct {
 	frame:  int,
@@ -55,9 +53,10 @@ video_init :: proc() {
 	sdl.SetHint(sdl.HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0")
 	sdl.SetHint(sdl.HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1")
 	sdl.SetHint(sdl.HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1")
-	headless = os.get_env("NT_HEADLESS", context.temp_allocator) == "1"
+	// NT_HEADLESS=1: no window, no 60 Hz pacing, no controllers.
+	core.headless_init()
 	stats = os.get_env("NT_STATS", context.temp_allocator) == "1"
-	hash_frames = os.get_env("NT_HASH", context.temp_allocator) == "1"
+	if !core.dump_init() {os.exit(1)}
 	if v, ok := os.lookup_env("NT_SNAPTEST", context.temp_allocator); ok {
 		a, _, b := strings.partition(v, ",")
 		snaptest = {strconv.parse_int(a) or_else 0, strconv.parse_int(b) or_else 0}
@@ -68,14 +67,11 @@ video_init :: proc() {
 		}
 	}
 	// The frame count drives NT_PRESS and NT_SHOT, so it rewinds with the game.
-	ee.snap_add(&frame)
-	ee.snap_add(&next_shot)
+	core.snap_add(&frame)
+	core.snap_add(&next_shot)
 	// Headless runs take input from NT_PRESS only, so they replay exactly.
 	subsystems := sdl.InitFlags{.VIDEO, .AUDIO, .GAMECONTROLLER}
-	if headless {
-		sdl.SetHint("SDL_VIDEODRIVER", "offscreen")
-		subsystems -= {.GAMECONTROLLER}
-	}
+	if core.headless {subsystems -= {.GAMECONTROLLER}}
 	if sdl.Init(subsystems) != 0 {
 		fmt.eprintln("sdl:", sdl.GetError())
 		os.exit(1)
@@ -84,20 +80,20 @@ video_init :: proc() {
 	// at NT_SCALE times the native resolution (default 1 headless, 3 in a
 	// window).
 	hw = os.get_env("NT_SW", context.temp_allocator) != "1"
-	scale := headless ? 1 : 3
+	scale := core.headless ? 1 : 3
 	if v, ok := strconv.parse_int(os.get_env("NT_SCALE", context.temp_allocator)); ok && v >= 1 && v <= 8 {scale = v}
 	flags := sdl.WindowFlags{.RESIZABLE}
-	if hw && !headless {flags += {.VULKAN}}
+	if hw && !core.headless {flags += {.VULKAN}}
 	win = sdl.CreateWindow("Nicktoons Unite!", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
 		gs.DISP_W * 2, 480 * 2, flags)
 	if hw {
-		gs.hw_init(headless ? nil : win, u32(scale))
+		gs.hw_init(core.headless ? nil : win, u32(scale))
 	} else {
 		ren = sdl.CreateRenderer(win, -1, {.ACCELERATED})
 		tex = sdl.CreateTexture(ren, .ABGR8888, .STREAMING, gs.DISP_W, gs.DISP_H)
 	}
-	gs.snap_regions(ee.snap_add_bytes)
-	if hw {append(&ee.snap_hooks, ee.Snap_Hook{gs.hw_snap_save, gs.hw_snap_load})}
+	gs.snap_regions(core.snap_add_bytes)
+	if hw {append(&core.snap_hooks, core.Snap_Hook{gs.hw_snap_save, gs.hw_snap_load})}
 	// Community mappings for pads SDL does not know (gamecontrollerdb.txt).
 	if v, ok := strconv.parse_int(os.get_env("NT_PLAYERS", context.temp_allocator)); ok {
 		forced_players = clamp(v, 1, ee.MAX_PLAYERS)
@@ -109,7 +105,7 @@ video_init :: proc() {
 	ee.gs.write = gs.write
 	ee.gs.transfer = gs.transfer
 	ee.vblank_hook = video_frame
-	audio_init(headless)
+	audio_init(core.headless)
 	last = time.tick_now()
 	if v, ok := os.lookup_env("NT_SHOT", context.temp_allocator); ok {
 		for item in strings.split(v, ",", context.temp_allocator) {
@@ -157,7 +153,7 @@ video_frame :: proc() {
 	audio_frame()
 	w, h := gs.scanout()
 	if w > 0 && h > 0 {
-		if !headless && !hw {
+		if !core.headless && !hw {
 			sdl.UpdateTexture(tex, nil, &gs.screen, gs.DISP_W * 4)
 			src := sdl.Rect{0, 0, i32(w), i32(h)}
 			sdl.RenderClear(ren)
@@ -178,18 +174,23 @@ video_frame :: proc() {
 			}
 			next_shot += 1
 			// A headless run with shots is done once the last one is taken.
-			if headless && next_shot == len(shots) && (snaptest[1] == 0 || snaptest_loaded) {os.exit(0)}
+			if core.headless && next_shot == len(shots) && (snaptest[1] == 0 || snaptest_loaded) {os.exit(0)}
 		}
 		shot_skip_update()
 		snaptest_frame()
 		if rbtest[1] > 0 {rbtest_frame()}
 		if stats && frame % STATS_FRAMES == 0 {print_stats()}
-		if hash_frames {
-			fmt.eprintfln("hash: frame %d  cyc %d  ram %16x  iop %16x", frame, ee.cpu.cycles,
-				xxhash.XXH3_64_default(ee.ram), xxhash.XXH3_64_default(ee.iop_ram))
+		// NT_DUMP=<dir>: the guest clock and EE and IOP memory per presented
+		// frame (with NT_DUMP_HASH=1, their hashes in <dir>/hashes.tsv, so two
+		// runs can be diffed for the first frame they diverge).
+		if core.dump_due(u64(frame)) {
+			cyc := ee.cpu.cycles
+			core.dump_put("cyc", "bin", u64(frame), ([^]u8)(&cyc)[:size_of(cyc)])
+			core.dump_put("ram", "bin", u64(frame), ee.ram)
+			core.dump_put("iop", "bin", u64(frame), ee.iop_ram)
 		}
 	}
-	if headless {return}
+	if core.headless {return}
 	FRAME :: time.Second / 60
 	el := time.tick_since(last)
 	if el < FRAME {time.sleep(FRAME - el)}
@@ -200,10 +201,6 @@ video_frame :: proc() {
 // share of guest time the kernel skipped with every thread waiting.
 @(private = "file")
 stats: bool
-// NT_HASH=1: per presented frame, the guest clock and hashes of EE and IOP
-// memory, so two runs can be diffed for the first frame they diverge.
-@(private = "file")
-hash_frames: bool
 @(private = "file")
 STATS_FRAMES :: 300
 
@@ -229,13 +226,13 @@ print_stats :: proc() {
 
 // NT_SNAPTEST=<save>,<load>: save state at presented frame <save>, load it
 // once at frame <load>. The replayed frames must match the first pass: with
-// NT_HASH, every frame hashes the same both times.
+// NT_DUMP_HASH, every frame hashes the same both times.
 @(private = "file")
 snaptest: [2]int
 @(private = "file")
 snaptest_loaded: bool
 @(private = "file")
-snaptest_snap: ee.Snapshot
+snaptest_snap: core.Snapshot
 @(private = "file")
 snaptest_t: time.Tick
 
@@ -246,11 +243,11 @@ snaptest_frame :: proc() {
 			time.duration_milliseconds(time.tick_since(snaptest_t)), len(snaptest_snap.data) >> 20)
 		snaptest_t = {}
 	}
-	op: ee.Snap_Op
+	op: core.Snap_Op
 	if frame == snaptest[0] && !snaptest_loaded {op = .Save}
 	if frame == snaptest[1] && !snaptest_loaded {op = .Load; snaptest_loaded = true}
 	if op != .None {
-		ee.snap_op, ee.snap_target = op, &snaptest_snap
+		core.snap_op, core.snap_target = op, &snaptest_snap
 		snaptest_t = time.tick_now()
 	}
 }
@@ -258,7 +255,7 @@ snaptest_frame :: proc() {
 // NT_RBTEST=<start>,<every>,<back>: from presented frame <start>, commit a
 // rollback record every frame, and every <every> frames rewind <back>
 // frames (once per frame reached). The resimulated frames must match a
-// plain run: with NT_HASH, the set of hash lines is the same.
+// plain run: with NT_DUMP_HASH, the set of hash lines is the same.
 @(private = "file")
 rbtest: [3]int
 @(private = "file")
@@ -267,13 +264,13 @@ rbtest_done: int // host side: the last frame rewound from
 @(private = "file")
 rbtest_frame :: proc() {
 	if frame < rbtest[0] {return}
-	ee.snap_op = .Commit
-	if frame > rbtest_done && (frame - rbtest[0]) % rbtest[1] == 0 && ee.rb_frames() > rbtest[2] {
+	core.snap_op = .Commit
+	if frame > rbtest_done && (frame - rbtest[0]) % rbtest[1] == 0 && core.rb_frames() > rbtest[2] {
 		rbtest_done = frame
-		ee.snap_op, ee.rb_back = .Rewind, rbtest[2]
+		core.snap_op, core.rb_back = .Rewind, rbtest[2]
 	}
 	if frame % 600 == 0 {
-		st := ee.rb_stats()
+		st := core.rb_stats()
 		fmt.eprintfln("rb: %d commits, avg %.3f ms (%.1f pages, %d KiB whole), worst %.3f ms", st.commits,
 			time.duration_milliseconds(st.total) / f64(max(st.commits, 1)), f64(st.pages) / f64(max(st.commits, 1)),
 			st.small >> 10, time.duration_milliseconds(st.worst))
@@ -283,7 +280,7 @@ rbtest_frame :: proc() {
 // Headless runs skip rasterizing until shortly before the next shot.
 @(private = "file")
 shot_skip_update :: proc() {
-	gs.skip_draw = headless && (next_shot >= len(shots) || frame < shots[next_shot] - SHOT_WARMUP)
+	gs.skip_draw = core.headless && (next_shot >= len(shots) || frame < shots[next_shot] - SHOT_WARMUP)
 }
 
 // One controller per player; a player keeps their slot until the pad is

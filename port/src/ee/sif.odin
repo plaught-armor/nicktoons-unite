@@ -10,6 +10,7 @@ package ee
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "ps:core"
 
 IOP_RAM_SIZE :: 8 << 20
 IOP_CMDBUF :: 0x0001f000 // where the IOP receives command packets
@@ -49,7 +50,7 @@ sif: struct {
 }
 
 sif_init :: proc() {
-	iop_ram = snap_area(IOP_RAM_SIZE)
+	iop_ram = core.snap_area(IOP_RAM_SIZE)
 	sif.smflg = SIF_STAT_SIFINIT | SIF_STAT_CMDINIT | SIF_STAT_BOOTEND
 	sif.sreg[0] = IOP_CMDBUF // SIF_SYSREG_SUBADDR
 	sif.next_dma = 1
@@ -331,7 +332,7 @@ disc_files: map[string]^os.File
 
 @(private)
 disc_open :: proc(path: string) -> (f: ^os.File, err: os.Error) {
-	context.allocator = host_allocator
+	context.allocator = core.host_allocator
 	if cached, ok := disc_files[path]; ok {return cached, nil}
 	f = os.open(path) or_return
 	disc_files[strings.clone(path)] = f
@@ -464,7 +465,7 @@ cdvd_ready_server :: proc(fno: u32, buf: []u8, send_size: u32) -> bool {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 sif_snap :: proc() {
-	snap_add(&sif)
-	snap_add(&fileio)
-	snap_add(&iop_heap_top)
+	core.snap_add(&sif)
+	core.snap_add(&fileio)
+	core.snap_add(&iop_heap_top)
 }

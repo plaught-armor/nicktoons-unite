@@ -8,6 +8,7 @@ package ee
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "ps:core"
 
 Vf :: struct #raw_union {
 	q: u128,
@@ -753,17 +754,17 @@ vu0_call_micro :: proc(addr: u32) {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 vu_snap :: proc() {
-	snap_add(&vu0)
-	snap_add(&vu1)
-	snap_add(&vu0_mem)
-	snap_add(&vu0_micro)
-	snap_add(&vu1_mem)
-	snap_add(&vu1_micro)
-	snap_add(&vu1_overrun)
-	snap_add(&vu1_resident)
-	snap_add(&vu1_micro_gen)
-	snap_add(&vu1_resident_gen)
-	snap_add(&vu1_pairs)
-	snap_add(&vu1_kick_hash)
-	snap_add(&vu1_kick_mute)
+	core.snap_add(&vu0)
+	core.snap_add(&vu1)
+	core.snap_add(&vu0_mem)
+	core.snap_add(&vu0_micro)
+	core.snap_add(&vu1_mem)
+	core.snap_add(&vu1_micro)
+	core.snap_add(&vu1_overrun)
+	core.snap_add(&vu1_resident)
+	core.snap_add(&vu1_micro_gen)
+	core.snap_add(&vu1_resident_gen)
+	core.snap_add(&vu1_pairs)
+	core.snap_add(&vu1_kick_hash)
+	core.snap_add(&vu1_kick_mute)
 }

@@ -18,6 +18,7 @@ import "core:fmt"
 import "core:math"
 import "core:os"
 import "core:strings"
+import "ps:core"
 
 FMOD_HEAP_START :: 0x00400000
 FMOD_HEAP_END :: IOP_RAM_SIZE
@@ -788,12 +789,12 @@ fmod_mix :: proc(out: []i16) {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 fmod_snap :: proc() {
-	snap_add(&heap)
-	snap_add(&samples)
-	snap_add(&songs)
-	snap_add(&streams)
-	snap_add(&voices)
-	snap_add(&num_voices)
-	snap_add(&sfx_volume)
-	snap_add(&pending)
+	core.snap_add(&heap)
+	core.snap_add(&samples)
+	core.snap_add(&songs)
+	core.snap_add(&streams)
+	core.snap_add(&voices)
+	core.snap_add(&num_voices)
+	core.snap_add(&sfx_volume)
+	core.snap_add(&pending)
 }

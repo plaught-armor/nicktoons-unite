@@ -5,6 +5,7 @@ package ee
 
 import "core:fmt"
 import "base:intrinsics"
+import "ps:core"
 
 // ------------------------------------------------------------- DMA source
 
@@ -469,8 +470,8 @@ dma_gif :: proc() {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 dma_snap :: proc() {
-	snap_add(&gif_paths)
-	snap_add(&vifs)
-	snap_add(&vif_warned)
-	snap_add(&dma_buf)
+	core.snap_add(&gif_paths)
+	core.snap_add(&vifs)
+	core.snap_add(&vif_warned)
+	core.snap_add(&dma_buf)
 }

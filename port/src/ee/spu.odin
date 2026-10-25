@@ -12,6 +12,7 @@
 package ee
 
 import "core:fmt"
+import "ps:core"
 
 SPU_RAM_SIZE :: 2 << 20
 
@@ -194,5 +195,5 @@ sdr_server :: proc(fno: u32, buf: []u8, send_size: u32) -> bool {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 spu_snap :: proc() {
-	snap_add(&spu)
+	core.snap_add(&spu)
 }

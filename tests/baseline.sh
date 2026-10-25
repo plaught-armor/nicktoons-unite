@@ -4,8 +4,9 @@
 #   tests/baseline.sh record [game|std|snap|all]   write reference outputs to tests/ref/
 #   tests/baseline.sh check  [game|std|snap|all]   compare a fresh run against tests/ref/
 #
-# game: one 22000-frame headless run of the GAME press script. Per-frame EE/IOP
-#       RAM hashes (NT_HASH=1) must match ref/hash.txt, and the frame-21400 shot
+# game: one 22000-frame headless run of the GAME press script. Per-frame guest
+#       clock and EE/IOP RAM hashes (NT_DUMP_HASH=1, hashes.tsv) must match
+#       ref/hashes.tsv, and the frame-21400 shot
 #       must match ref/c_a.ppm (the GAME_OK shot, default GPU GS at scale 1).
 # std:  menu shots at 1000 and 2050. GPU GS and software GS (NT_SW=1) must be
 #       bit-identical, and both must match ref/std_*.ppm. Only menus: 3D gameplay
@@ -15,7 +16,7 @@
 #
 # References and run output are game-derived and gitignored (tests/ref/, tests/out/).
 # Uses port/nicktoons_nbc (override with NT_BIN); build it first:
-#   cd port && odin build src -out:nicktoons_nbc -use-separate-modules -o:speed -no-bounds-check
+#   cd port && odin build src -out:nicktoons_nbc -collection:ps=<ps-recomp checkout> -define:ENV_PREFIX=NT_ -use-separate-modules -o:speed -no-bounds-check
 # record refuses to overwrite an existing reference unless FORCE=1.
 set -eu
 
@@ -46,9 +47,8 @@ run() {
 	rm -rf "$dir"
 	mkdir -p "$dir/mc"
 	echo "run $name" >&2
-	# Ignore every real controller: a connected pad would merge with NT_PRESS input.
-	(cd "$dir" && env NT_MC="$dir/mc" NT_HEADLESS=1 SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0000/0x0000 \
-		"$@" "$BIN" > run.log 2>&1)
+	# NT_HEADLESS also ignores every real controller, which would merge with NT_PRESS input.
+	(cd "$dir" && env NT_MC="$dir/mc" NT_HEADLESS=1 "$@" "$BIN" > run.log 2>&1)
 }
 
 # same A B LABEL: byte compare, report, count failures.
@@ -73,13 +73,12 @@ keep() {
 }
 
 game() {
-	run game NT_HASH=1 NT_SHOT=21400,22000 NT_PRESS="$P"
-	grep '^hash' "$OUT/game/run.log" > "$OUT/game/hash.txt"
+	run game NT_DUMP="$OUT/game" NT_DUMP_HASH=1 NT_SHOT=21400,22000 NT_PRESS="$P"
 	if [ "$mode" = record ]; then
-		keep "$OUT/game/hash.txt" "$REF/hash.txt"
+		keep "$OUT/game/hashes.tsv" "$REF/hashes.tsv"
 		keep "$OUT/game/shot_21400.ppm" "$REF/c_a.ppm"
 	else
-		same "$OUT/game/hash.txt" "$REF/hash.txt" "game hashes"
+		same "$OUT/game/hashes.tsv" "$REF/hashes.tsv" "game hashes"
 		same "$OUT/game/shot_21400.ppm" "$REF/c_a.ppm" "GAME_OK shot 21400"
 	fi
 }

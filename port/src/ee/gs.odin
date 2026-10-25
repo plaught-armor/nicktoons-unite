@@ -4,6 +4,7 @@
 package ee
 
 import "core:fmt"
+import "ps:core"
 
 GS_PRIM :: 0x00
 GS_RGBAQ :: 0x01
@@ -75,5 +76,5 @@ gs_priv :: proc(off: u32) -> u64 {
 // Emulated state, saved and restored by snapshots (snap.odin).
 @(private)
 gs_snap :: proc() {
-	snap_add(&gs)
+	core.snap_add(&gs)
 }
