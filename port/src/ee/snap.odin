@@ -6,6 +6,8 @@
 // that took it, and nothing it points at may move or be freed for good:
 // - globals are copied where they are (the regions each file registers
 //   with snap_add);
+// - large memory (EE and IOP RAM) is mapped page-aligned by snap_area, so
+//   rollback (rollback.odin) can track its writes;
 // - every heap allocation the emulator makes goes to one reserved region
 //   managed by a buddy allocator (emu_allocator, the context allocator for
 //   init and for every coroutine), copied block by block with its headers,
@@ -35,6 +37,8 @@ Snap_Op :: enum {
 	None,
 	Save,
 	Load,
+	Commit, // rollback: record this frame
+	Rewind, // rollback: go back rb_back frames
 }
 
 // Set by the host during a vblank (vblank_hook): the operation done before
@@ -53,15 +57,23 @@ Snap_Hook :: struct {
 @(private)
 snap_regions: [dynamic][]u8
 
+// Memory from snap_area.
+@(private)
+snap_areas: [dynamic][]u8
+
 // The coroutine to resume after a snapshot operation; part of the state.
 @(private)
 snap_resume: ^Coroutine
 
+// About 19 MiB is in use in a 4-player level. Rollback scans the whole
+// region for written pages every frame, at a cost that grows with its size.
 @(private)
-EMU_HEAP :: 1 << 30
+EMU_HEAP :: 1 << 27
 
 @(private)
 emu_heap: mem.Buddy_Allocator
+@(private)
+emu_heap_mem: []u8
 
 host_allocator: runtime.Allocator
 
@@ -74,12 +86,23 @@ snap_add_bytes :: proc(b: []u8) {
 	append(&snap_regions, b)
 }
 
+// Map `n` bytes (a multiple of the page size) of zeroed emulated memory.
+@(private)
+snap_area :: proc(n: int) -> []u8 {
+	base, err := linux.mmap(0, uint(n), {.READ, .WRITE}, {.PRIVATE, .ANONYMOUS, .NORESERVE})
+	assert(err == .NONE, "snapshot area")
+	b := ([^]u8)(base)[:n]
+	append(&snap_areas, b)
+	return b
+}
+
 @(private)
 snap_init :: proc() {
 	host_allocator = context.allocator
 	base, err := linux.mmap(0, EMU_HEAP, {.READ, .WRITE}, {.PRIVATE, .ANONYMOUS, .NORESERVE})
 	assert(err == .NONE, "emulator heap")
-	mem.buddy_allocator_init(&emu_heap, ([^]u8)(base)[:EMU_HEAP], 64) // maps want cache-line alignment
+	emu_heap_mem = ([^]u8)(base)[:EMU_HEAP]
+	mem.buddy_allocator_init(&emu_heap, emu_heap_mem, 64) // maps want cache-line alignment
 	snap_add(&snap_resume)
 }
 
@@ -127,6 +150,8 @@ run :: proc(entry: u32) -> ! {
 		case .None:
 		case .Save: snap_save(snap_target)
 		case .Load: snap_load(snap_target)
+		case .Commit: rb_commit()
+		case .Rewind: rb_rewind(rb_back)
 		}
 		snap_op = .None
 	}
@@ -140,13 +165,8 @@ snap_yield :: proc() {
 }
 
 @(private)
-put :: proc(s: ^Snapshot, b: []u8) {
-	append(&s.data, ..b)
-}
-
-@(private)
-take :: proc(s: ^Snapshot, pos: ^int, n: int) -> []u8 {
-	b := s.data[pos^:][:n]
+take :: proc(d: []u8, pos: ^int, n: int) -> []u8 {
+	b := d[pos^:][:n]
 	pos^ += n
 	return b
 }
@@ -155,38 +175,61 @@ take :: proc(s: ^Snapshot, pos: ^int, n: int) -> []u8 {
 snap_save :: proc(s: ^Snapshot) {
 	clear(&s.data)
 	s.frame = k.frame
-	for r in snap_regions {put(s, r)}
+	put_regions(&s.data)
+	for a in snap_areas {append(&s.data, ..a)}
 	// Heap blocks in address order: whole used blocks, free ones' headers.
 	h := &emu_heap
 	for b := h.head; b < h.tail; b = mem.buddy_block_next(b) {
 		n := b.is_free ? size_of(mem.Buddy_Block) : int(b.size)
-		put(s, ([^]u8)(b)[:n])
+		append(&s.data, ..([^]u8)(b)[:n])
 	}
-	// Live stacks, from the saved pointer to the top.
-	for co in co_stack_owner {
-		if co == nil {continue}
-		top := uintptr(co.ctx.stack) + CO_STACK
-		put(s, ([^]u8)(co.ctx.sp)[:top - uintptr(co.ctx.sp)])
-	}
+	put_stacks(&s.data)
 	for h in snap_hooks {h.save(s.id)}
 }
 
 @(private)
 snap_load :: proc(s: ^Snapshot) {
 	pos := 0
-	for r in snap_regions {copy(r, take(s, &pos, len(r)))}
+	take_regions(s.data[:], &pos)
+	for a in snap_areas {copy(a, take(s.data[:], &pos, len(a)))}
 	h := &emu_heap
 	for b := h.head; b < h.tail; b = mem.buddy_block_next(b) {
-		hdr := take(s, &pos, size_of(mem.Buddy_Block))
+		hdr := take(s.data[:], &pos, size_of(mem.Buddy_Block))
 		copy(([^]u8)(b)[:len(hdr)], hdr)
-		if !b.is_free {copy(([^]u8)(b)[len(hdr):b.size], take(s, &pos, int(b.size) - len(hdr)))}
+		if !b.is_free {copy(([^]u8)(b)[len(hdr):b.size], take(s.data[:], &pos, int(b.size) - len(hdr)))}
 	}
-	// co_stack_owner is a region, so these are the saved owners.
+	take_stacks(s.data[:], &pos)
+	assert(pos == len(s.data), "snapshot: size mismatch")
+	for h in snap_hooks {h.load(s.id)}
+}
+
+@(private)
+put_regions :: proc(d: ^[dynamic]u8) {
+	for r in snap_regions {append(d, ..r)}
+}
+
+@(private)
+take_regions :: proc(d: []u8, pos: ^int) {
+	for r in snap_regions {copy(r, take(d, pos, len(r)))}
+}
+
+// Live stacks, from the saved pointer to the top.
+@(private)
+put_stacks :: proc(d: ^[dynamic]u8) {
+	for co in co_stack_owner {
+		if co == nil {continue}
+		top := uintptr(co.ctx.stack) + CO_STACK
+		append(d, ..([^]u8)(co.ctx.sp)[:top - uintptr(co.ctx.sp)])
+	}
+}
+
+// After take_regions: co_stack_owner is a region, so these are the saved
+// owners.
+@(private)
+take_stacks :: proc(d: []u8, pos: ^int) {
 	for co in co_stack_owner {
 		if co == nil {continue}
 		n := int(uintptr(co.ctx.stack) + CO_STACK - uintptr(co.ctx.sp))
-		copy(([^]u8)(co.ctx.sp)[:n], take(s, &pos, n))
+		copy(([^]u8)(co.ctx.sp)[:n], take(d, pos, n))
 	}
-	assert(pos == len(s.data), "snapshot: size mismatch")
-	for h in snap_hooks {h.load(s.id)}
 }

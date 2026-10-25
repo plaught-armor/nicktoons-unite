@@ -62,6 +62,11 @@ video_init :: proc() {
 		a, _, b := strings.partition(v, ",")
 		snaptest = {strconv.parse_int(a) or_else 0, strconv.parse_int(b) or_else 0}
 	}
+	if v, ok := os.lookup_env("NT_RBTEST", context.temp_allocator); ok {
+		for f, i in strings.split(v, ",", context.temp_allocator) {
+			if i < len(rbtest) {rbtest[i] = strconv.parse_int(f) or_else 0}
+		}
+	}
 	// The frame count drives NT_PRESS and NT_SHOT, so it rewinds with the game.
 	ee.snap_add(&frame)
 	ee.snap_add(&next_shot)
@@ -177,6 +182,7 @@ video_frame :: proc() {
 		}
 		shot_skip_update()
 		snaptest_frame()
+		if rbtest[1] > 0 {rbtest_frame()}
 		if stats && frame % STATS_FRAMES == 0 {print_stats()}
 		if hash_frames {
 			fmt.eprintfln("hash: frame %d  cyc %d  ram %16x  iop %16x", frame, ee.cpu.cycles,
@@ -246,6 +252,31 @@ snaptest_frame :: proc() {
 	if op != .None {
 		ee.snap_op, ee.snap_target = op, &snaptest_snap
 		snaptest_t = time.tick_now()
+	}
+}
+
+// NT_RBTEST=<start>,<every>,<back>: from presented frame <start>, commit a
+// rollback record every frame, and every <every> frames rewind <back>
+// frames (once per frame reached). The resimulated frames must match a
+// plain run: with NT_HASH, the set of hash lines is the same.
+@(private = "file")
+rbtest: [3]int
+@(private = "file")
+rbtest_done: int // host side: the last frame rewound from
+
+@(private = "file")
+rbtest_frame :: proc() {
+	if frame < rbtest[0] {return}
+	ee.snap_op = .Commit
+	if frame > rbtest_done && (frame - rbtest[0]) % rbtest[1] == 0 && ee.rb_frames() > rbtest[2] {
+		rbtest_done = frame
+		ee.snap_op, ee.rb_back = .Rewind, rbtest[2]
+	}
+	if frame % 600 == 0 {
+		st := ee.rb_stats()
+		fmt.eprintfln("rb: %d commits, avg %.3f ms (%.1f pages, %d KiB whole), worst %.3f ms", st.commits,
+			time.duration_milliseconds(st.total) / f64(max(st.commits, 1)), f64(st.pages) / f64(max(st.commits, 1)),
+			st.small >> 10, time.duration_milliseconds(st.worst))
 	}
 }
 

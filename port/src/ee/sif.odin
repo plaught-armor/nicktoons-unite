@@ -49,8 +49,7 @@ sif: struct {
 }
 
 sif_init :: proc() {
-	iop_ram = make([]u8, IOP_RAM_SIZE, host_allocator)
-	snap_add_bytes(iop_ram)
+	iop_ram = snap_area(IOP_RAM_SIZE)
 	sif.smflg = SIF_STAT_SIFINIT | SIF_STAT_CMDINIT | SIF_STAT_BOOTEND
 	sif.sreg[0] = IOP_CMDBUF // SIF_SYSREG_SUBADDR
 	sif.next_dma = 1

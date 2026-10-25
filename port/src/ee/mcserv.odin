@@ -3,6 +3,12 @@
 // (or in $NT_MC, so scripted runs can start from a blank card), holding the
 // card's save directories and files as plain host files.
 //
+// The card's contents are emulated state: read from the host directory on
+// first use into `mc.card` (emulator heap), which every command works on, so
+// save states and rollback rewind the card with the game. Each change is
+// written through to the host files at once; a change made in frames that a
+// rollback discards stays on the host until the card changes that path again.
+//
 // Listings must not depend on the host: entries are sorted by name and carry
 // one fixed timestamp, so runs (and netplay peers) see identical cards.
 package ee
@@ -39,12 +45,22 @@ MC_ENTRY_SIZE :: 64
 
 @(private = "file")
 Mc_File :: struct {
-	f:   ^os.File,
-	pos: i64,
+	port: u32,
+	path: string, // guest path; "" is a free handle
+	pos:  i64,
+}
+
+// A file or directory on the card, keyed by its guest path.
+@(private = "file")
+Mc_Node :: struct {
+	is_dir: bool,
+	data:   [dynamic]u8,
 }
 
 @(private = "file")
 mc: struct {
+	card:    [MC_PORTS]map[string]Mc_Node,
+	loaded:  [MC_PORTS]bool,
 	cwd:     [MC_PORTS]string, // "" is the root, else "/DIR"
 	known:   [MC_PORTS]bool, // GetInfo reported the card once already
 	files:   [dynamic]Mc_File, // handle = index
@@ -69,7 +85,7 @@ mcserv_server :: proc(fno: u32, buf: []u8, send_size: u32) -> bool {
 	case 0x04: r = mc_seek(w[0], i32(w[4]), w[5])
 	case 0x05: r = mc_read(w[0], w[3], w[6], w[7])
 	case 0x06: r = mc_write(w[0], w[3], w[6], buf[MC_DATA:][:min(w[5], 16)])
-	case 0x0a: r = MC_OK // Flush: writes go straight to the host file
+	case 0x0a: r = MC_OK // Flush: changes are written through at once
 	case 0x0c: r = mc_chdir(w[0], w[4], mc_name(buf))
 	case 0x0d: r = mc_get_dir(w[0], w[2], w[3], w[4], mc_name(buf))
 	case 0x0e: r = mc_set_file_info(w[0], w[2], w[4], mc_name(buf))
@@ -114,16 +130,59 @@ mc_guest_path :: proc(port: u32, name: string) -> string {
 	return strings.concatenate({"/", strings.join(parts[:], "/", context.temp_allocator)}, context.temp_allocator)
 }
 
-@(private = "file")
-mc_host_path :: proc(port: u32, name: string) -> string {
-	return mc_card_path(port, mc_guest_path(port, name))
-}
-
 // The host path of a normalized guest path.
 @(private = "file")
 mc_card_path :: proc(port: u32, guest: string) -> string {
 	root := os.get_env("NT_MC", context.temp_allocator)
 	return fmt.tprintf("%s/memcard%d%s", root if root != "" else ".", port, guest)
+}
+
+// The port's card, read from the host on first use.
+@(private = "file")
+mc_card :: proc(port: u32) -> ^map[string]Mc_Node {
+	card := &mc.card[port]
+	if mc.loaded[port] {return card}
+	mc.loaded[port] = true
+	_ = os.make_directory_all(mc_card_path(port, ""))
+	load :: proc(card: ^map[string]Mc_Node, port: u32, guest: string) {
+		infos, _ := os.read_all_directory_by_path(mc_card_path(port, guest), context.temp_allocator)
+		for fi in infos {
+			path := strings.concatenate({guest, "/", fi.name})
+			if fi.type == .Directory {
+				card[path] = {is_dir = true}
+				load(card, port, path)
+			} else {
+				data, _ := os.read_entire_file(fi.fullpath, context.temp_allocator)
+				node := Mc_Node{}
+				append(&node.data, ..data)
+				card[path] = node
+			}
+		}
+	}
+	load(card, port, "")
+	return card
+}
+
+// The node at a guest path; the root is a directory with no node.
+@(private = "file")
+mc_node :: proc(port: u32, guest: string) -> (node: ^Mc_Node, is_dir: bool, ok: bool) {
+	if guest == "" {return nil, true, true}
+	card := mc_card(port)
+	if guest not_in card {return}
+	node = &card[guest]
+	return node, node.is_dir, true
+}
+
+// Write a node (or its removal) through to the host.
+@(private = "file")
+mc_sync :: proc(port: u32, guest: string) {
+	path := mc_card_path(port, guest)
+	node, is_dir, ok := mc_node(port, guest)
+	switch {
+	case !ok: _ = os.remove(path)
+	case is_dir: _ = os.make_directory(path)
+	case: _ = os.write_entire_file(path, node.data[:])
+	}
 }
 
 // GetInfo {?, port, slot, want formatted, want free, want type, ?, result
@@ -132,7 +191,6 @@ mc_card_path :: proc(port: u32, guest: string) -> string {
 mc_get_info :: proc(w: [^]u32) -> i32 {
 	port := w[1]
 	if !mc_port_ok(port) {return -1}
-	_ = os.make_directory_all(mc_host_path(port, "/"))
 	out := ([^]u32)(raw_data(ram_slice(w[7], 0x94)))
 	if w[5] != 0 {out[0] = 2} // PS2 card
 	if w[4] != 0 {out[1] = 0x2000} // free clusters of 1 KB
@@ -146,57 +204,61 @@ mc_get_info :: proc(w: [^]u32) -> i32 {
 @(private = "file")
 mc_open :: proc(port, flags: u32, name: string) -> i32 {
 	if !mc_port_ok(port) {return -1}
-	path := mc_host_path(port, name)
+	guest := mc_guest_path(port, name)
+	node, is_dir, exists := mc_node(port, guest)
 	if flags == MC_CREATE_DIR {
-		if os.exists(path) {return MC_NO_ENTRY}
-		return MC_OK if os.make_directory(path) == nil else -1
+		if exists {return MC_NO_ENTRY}
+		mc_card(port)[strings.clone(guest)] = {is_dir = true}
+		mc_sync(port, guest)
+		return MC_OK
 	}
-	if !os.exists(path) && flags & MC_CREAT == 0 {return MC_NO_ENTRY}
-	if os.is_dir(path) {return MC_DENIED}
-	ff := os.File_Flags{.Read}
-	if flags & 3 != MC_RDONLY {ff += {.Write}}
-	if flags & MC_CREAT != 0 {ff += {.Create, .Write}}
-	if flags & MC_TRUNC != 0 {ff += {.Trunc, .Write}}
-	// Host handles are never closed (see mc_close).
-	f, err := os.open(path, ff, os.Permissions_Default_File)
-	if err != nil {return MC_NO_ENTRY}
-	if k.debug >= 1 {fmt.eprintfln("mc: open \"%s\" flags %x -> %s", name, flags, path)}
+	if !exists && flags & MC_CREAT == 0 {return MC_NO_ENTRY}
+	if is_dir {return MC_DENIED}
+	if !exists {
+		mc_card(port)[strings.clone(guest)] = {}
+		mc_sync(port, guest)
+	} else if flags & MC_TRUNC != 0 {
+		clear(&node.data)
+		mc_sync(port, guest)
+	}
+	if k.debug >= 1 {fmt.eprintfln("mc: open \"%s\" flags %x", guest, flags)}
+	f := Mc_File{port, strings.clone(guest), 0}
 	for &e, i in mc.files {
-		if e.f == nil {
-			e = {f, 0}
+		if e.path == "" {
+			e = f
 			return i32(i)
 		}
 	}
-	append(&mc.files, Mc_File{f, 0})
+	append(&mc.files, f)
 	return i32(len(mc.files) - 1)
 }
 
+// An open file and its node (nil if the file was deleted while open).
 @(private = "file")
-mc_file :: proc(h: u32) -> ^Mc_File {
-	if int(h) >= len(mc.files) || mc.files[h].f == nil {return nil}
-	return &mc.files[h]
+mc_file :: proc(h: u32) -> (^Mc_File, ^Mc_Node) {
+	if int(h) >= len(mc.files) || mc.files[h].path == "" {return nil, nil}
+	f := &mc.files[h]
+	node, _, _ := mc_node(f.port, f.path)
+	return f, node
 }
 
 @(private = "file")
 mc_close :: proc(h: u32) -> i32 {
-	f := mc_file(h)
+	f, _ := mc_file(h)
 	if f == nil {return -1}
-	// The host file stays open: a snapshot may hold the handle. Writes go
-	// straight to the file, so nothing is lost; cards open few files.
+	delete(f.path)
 	f^ = {}
 	return MC_OK
 }
 
 @(private = "file")
 mc_seek :: proc(h: u32, off: i32, origin: u32) -> i32 {
-	f := mc_file(h)
-	if f == nil {return -1}
+	f, node := mc_file(h)
+	if node == nil {return -1}
 	switch origin {
 	case 0: f.pos = i64(off)
 	case 1: f.pos += i64(off)
-	case 2:
-		size, _ := os.file_size(f.f)
-		f.pos = size + i64(off)
+	case 2: f.pos = i64(len(node.data)) + i64(off)
 	}
 	f.pos = max(f.pos, 0)
 	return i32(f.pos)
@@ -207,13 +269,14 @@ mc_seek :: proc(h: u32, off: i32, origin: u32) -> i32 {
 // lands in the buffer and the param block says nothing is left over.
 @(private = "file")
 mc_read :: proc(h, size, dst, param: u32) -> i32 {
-	f := mc_file(h)
-	if f == nil {return MC_DENIED}
+	f, node := mc_file(h)
+	if node == nil {return MC_DENIED}
 	if param != 0 {
 		p := ([^]u32)(raw_data(ram_slice(param, 8)))
 		p[0], p[1] = 0, 0
 	}
-	n, _ := os.read_at(f.f, ram_slice(dst, size), f.pos)
+	n := 0
+	if f.pos < i64(len(node.data)) {n = copy(ram_slice(dst, size), node.data[f.pos:])}
 	f.pos += i64(n)
 	return i32(n)
 }
@@ -222,13 +285,16 @@ mc_read :: proc(h, size, dst, param: u32) -> i32 {
 // unaligned head bytes travel in the request, the rest is read from EE RAM.
 @(private = "file")
 mc_write :: proc(h, size, src: u32, head: []u8) -> i32 {
-	f := mc_file(h)
-	if f == nil {return MC_DENIED}
-	n0, _ := os.write_at(f.f, head, f.pos)
-	f.pos += i64(n0)
-	n1, _ := os.write_at(f.f, ram_slice(src, size), f.pos)
-	f.pos += i64(n1)
-	return i32(n0 + n1)
+	f, node := mc_file(h)
+	if node == nil {return MC_DENIED}
+	for b in ([][]u8{head, ram_slice(src, size)}) {
+		end := int(f.pos) + len(b)
+		if end > len(node.data) {resize(&node.data, end)}
+		copy(node.data[f.pos:], b)
+		f.pos = i64(end)
+	}
+	mc_sync(f.port, f.path)
+	return i32(len(head) + int(size))
 }
 
 // ChDir {port, slot, ?, ?, old dir address, new dir}: reports the current
@@ -243,7 +309,7 @@ mc_chdir :: proc(port, out: u32, name: string) -> i32 {
 		dst[n] = 0
 	}
 	guest := mc_guest_path(port, name)
-	if !os.is_dir(mc_host_path(port, name)) {return MC_NO_ENTRY}
+	if _, is_dir, ok := mc_node(port, guest); !ok || !is_dir {return MC_NO_ENTRY}
 	delete(mc.cwd[port])
 	mc.cwd[port] = strings.clone(guest)
 	return MC_OK
@@ -289,20 +355,32 @@ mc_get_dir :: proc(port, flags, max_entries, table: u32, name: string) -> i32 {
 		guest := mc_guest_path(port, name)
 		slash := strings.last_index_byte(guest, '/')
 		pat := guest[slash + 1:]
-		dir := mc_card_path(port, guest[:max(slash, 0)])
-		if !os.is_dir(dir) {return MC_NO_ENTRY}
+		dir := guest[:max(slash, 0)]
+		if _, is_dir, ok := mc_node(port, dir); !ok || !is_dir {return MC_NO_ENTRY}
 		if slash > 0 {
 			// Inside a save directory the listing starts with "." and "..".
 			for n in ([]string{".", ".."}) {
 				if mc_glob(pat, n) {append(&mc.dir, mc_entry(n, 0, true))}
 			}
 		}
-		infos, err := os.read_all_directory_by_path(dir, context.temp_allocator)
-		if err != nil {return MC_NO_ENTRY}
-		slice.sort_by(infos, proc(a, b: os.File_Info) -> bool {return a.name < b.name})
-		for fi in infos {
-			if !mc_glob(pat, fi.name) {continue}
-			append(&mc.dir, mc_entry(fi.name, fi.size, fi.type == .Directory))
+		names := make([dynamic]string, context.temp_allocator)
+		for path in mc_card(port) {
+			if mc_parent(path) == dir {append(&names, path[len(dir) + 1:])}
+		}
+		slice.sort(names[:])
+		for n in names {
+			if !mc_glob(pat, n) {continue}
+			path := strings.concatenate({dir, "/", n}, context.temp_allocator)
+			node := mc_card(port)[path]
+			// A directory's length is its entry count, "." and ".." included.
+			size := len(node.data)
+			if node.is_dir {
+				size = 2
+				for p in mc_card(port) {
+					if mc_parent(p) == path {size += 1}
+				}
+			}
+			append(&mc.dir, mc_entry(n, i64(size), node.is_dir))
 		}
 	}
 	n := min(int(max_entries), len(mc.dir) - mc.dir_pos)
@@ -317,36 +395,69 @@ mc_get_dir :: proc(port, flags, max_entries, table: u32, name: string) -> i32 {
 	return i32(max(n, 0))
 }
 
+@(private = "file")
+mc_parent :: proc(path: string) -> string {
+	return path[:max(strings.last_index_byte(path, '/'), 0)]
+}
+
 // SetFileInfo {port, slot, flags, ?, entry, name}: only renames are kept;
-// times and attributes come from the host file.
+// entries carry fixed times and attributes.
 @(private = "file")
 mc_set_file_info :: proc(port, flags, table: u32, name: string) -> i32 {
 	if !mc_port_ok(port) {return -1}
-	path := mc_host_path(port, name)
-	if !os.exists(path) {return MC_NO_ENTRY}
+	guest := mc_guest_path(port, name)
+	if guest == "" {return MC_DENIED}
+	if _, _, ok := mc_node(port, guest); !ok {return MC_NO_ENTRY}
 	if flags & MC_ATTR_RENAME == 0 {return MC_OK}
 	new_name := string(cstring(raw_data(ram_slice(table + 0x20, 0x20))))
-	dir := path[:strings.last_index_byte(path, '/')]
-	return MC_OK if os.rename(path, fmt.tprintf("%s/%s", dir, new_name)) == nil else MC_DENIED
+	to := strings.concatenate({mc_parent(guest), "/", new_name}, context.temp_allocator)
+	if _, _, taken := mc_node(port, to); taken {return MC_DENIED}
+	// The entry and, for a directory, everything under it.
+	card := mc_card(port)
+	moved := make([dynamic]string, context.temp_allocator)
+	for path in card {
+		if path == guest || strings.has_prefix(path, guest) && path[len(guest)] == '/' {append(&moved, path)}
+	}
+	for path in moved {
+		key, node := delete_key(card, path)
+		card[strings.concatenate({to, path[len(guest):]})] = node
+		delete(key)
+	}
+	for &f in mc.files {
+		if f.port == port && f.path == guest {
+			delete(f.path)
+			f.path = strings.clone(to)
+		}
+	}
+	_ = os.rename(mc_card_path(port, guest), mc_card_path(port, to))
+	return MC_OK
 }
 
 @(private = "file")
 mc_delete :: proc(port: u32, name: string) -> i32 {
 	if !mc_port_ok(port) {return -1}
-	path := mc_host_path(port, name)
-	if !os.exists(path) {return MC_NO_ENTRY}
-	if os.is_dir(path) {
-		infos, _ := os.read_all_directory_by_path(path, context.temp_allocator)
-		if len(infos) > 0 {return MC_NOT_EMPTY}
+	guest := mc_guest_path(port, name)
+	if guest == "" {return MC_DENIED}
+	if _, is_dir, ok := mc_node(port, guest); !ok {
+		return MC_NO_ENTRY
+	} else if is_dir {
+		for path in mc_card(port) {
+			if mc_parent(path) == guest {return MC_NOT_EMPTY}
+		}
 	}
-	return MC_OK if os.remove(path) == nil else MC_DENIED
+	key, node := delete_key(mc_card(port), guest)
+	delete(key)
+	delete(node.data)
+	mc_sync(port, guest)
+	return MC_OK
 }
 
 // GetEntSpace: free entries in a directory; a directory cluster holds plenty.
 @(private = "file")
 mc_get_ent_space :: proc(port: u32, name: string) -> i32 {
 	if !mc_port_ok(port) {return -1}
-	return 0xfe if os.is_dir(mc_host_path(port, name)) else MC_NO_ENTRY
+	_, is_dir, ok := mc_node(port, mc_guest_path(port, name))
+	return 0xfe if ok && is_dir else MC_NO_ENTRY
 }
 
 // Emulated state, saved and restored by snapshots (snap.odin).

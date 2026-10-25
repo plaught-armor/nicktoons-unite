@@ -22,8 +22,7 @@ ram_base: [^]u8
 fast_lim: u32
 
 mem_init :: proc() {
-	ram = make([]u8, RAM_SIZE, host_allocator)
-	snap_add_bytes(ram)
+	ram = snap_area(RAM_SIZE)
 	ram_base = raw_data(ram)
 	fast_lim = RAM_SIZE
 }
