@@ -18,6 +18,8 @@ Vertex :: struct {
 // Headless runs with no screenshot due skip rasterisation; uploads,
 // registers and FINISH/SIGNAL still happen.
 skip_draw: bool
+// Frames rerun after a netplay rollback are drawn but not shown.
+skip_present: bool
 
 @(private)
 cur: Vertex // attributes from RGBAQ/ST/UV/FOG awaiting a vertex kick

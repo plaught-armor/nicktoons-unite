@@ -3,6 +3,7 @@
 package main
 
 import "core:fmt"
+import "core:hash/xxhash"
 import "core:math"
 import "core:os"
 import "core:slice"
@@ -30,6 +31,9 @@ frame: int
 shots: [dynamic]int // NT_SHOT=<frame>,...: write shot_<frame>.ppm at each, ascending
 @(private = "file")
 next_shot: int // index into shots
+// Every vblank, unlike frame (presented frames): netplay's frame count.
+@(private = "file")
+vblank: int
 @(private = "file")
 SHOT_WARMUP :: 10 // frames drawn before a headless shot, to fill both buffers
 // NT_PRESS=Start@600,Cross@900: scripted taps, held for PRESS_FRAMES, so a
@@ -60,6 +64,7 @@ video_init :: proc() {
 	// The frame count drives NT_PRESS and NT_SHOT, so it rewinds with the game.
 	core.snap_add(&frame)
 	core.snap_add(&next_shot)
+	core.snap_add(&vblank)
 	// Headless runs take input from NT_PRESS only, so they replay exactly.
 	subsystems := sdl.InitFlags{.VIDEO, .AUDIO, .GAMECONTROLLER}
 	if core.headless {subsystems -= {.GAMECONTROLLER}}
@@ -94,6 +99,7 @@ video_init :: proc() {
 		forced_players = clamp(v, 1, ee.MAX_PLAYERS)
 		for i in 0 ..< forced_players {ee.pads[i].connected = true}
 	}
+	net_init()
 	ee.gs.write = gs.write
 	ee.gs.transfer = gs.transfer
 	ee.vblank_hook = video_frame
@@ -113,6 +119,7 @@ video_frame :: proc() {
 	// Nothing outlives a frame in the temp arena; without this it grows
 	// with every DMA transfer gathered into it.
 	free_all(context.temp_allocator)
+	vblank += 1
 	ev: sdl.Event
 	for sdl.PollEvent(&ev) {
 		if ev.type == .QUIT {os.exit(0)}
@@ -120,10 +127,17 @@ video_frame :: proc() {
 		core.input_event(ev)
 	}
 	input_poll()
-	audio_frame()
+	// A rerun after a rollback: emulated as usual, but neither shown nor
+	// heard, and unpaced.
+	rerun := core.net_resimulating()
+	if core.net_hash_due() {
+		core.net_hash(xxhash.XXH3_64_with_seed(ee.iop_ram, xxhash.XXH3_64_default(ee.ram)))
+	}
+	audio_frame(!rerun)
+	gs.skip_present = rerun
 	w, h := gs.scanout()
 	if w > 0 && h > 0 {
-		if !core.headless && !hw {
+		if !core.headless && !hw && !rerun {
 			sdl.UpdateTexture(tex, nil, &gs.screen, gs.DISP_W * 4)
 			src := sdl.Rect{0, 0, i32(w), i32(h)}
 			sdl.RenderClear(ren)
@@ -144,7 +158,11 @@ video_frame :: proc() {
 			}
 			next_shot += 1
 			// A headless run with shots is done once the last one is taken.
-			if core.headless && next_shot == len(shots) && (snaptest[1] == 0 || snaptest_loaded) {os.exit(0)}
+			if core.headless && next_shot == len(shots) && (snaptest[1] == 0 || snaptest_loaded) {
+				// A netplay peer may still need this host's input to get here.
+				if !net_on {os.exit(0)}
+				if quit_at == 0 {quit_at = vblank + NET_LINGER}
+			}
 		}
 		shot_skip_update()
 		snaptest_frame()
@@ -160,7 +178,12 @@ video_frame :: proc() {
 			core.dump_put("iop", "bin", u64(frame), ee.iop_ram)
 		}
 	}
-	if core.headless {return}
+	if net_on && vblank % 600 == 0 {print_net()}
+	if quit_at > 0 && vblank >= quit_at {
+		print_net()
+		os.exit(0)
+	}
+	if core.headless || rerun {return}
 	FRAME :: time.Second / 60
 	el := time.tick_since(last)
 	if el < FRAME {time.sleep(FRAME - el)}
@@ -264,28 +287,87 @@ forced_players: int
 @(private = "file")
 input_poll :: proc() {
 	ps := core.input_poll(u64(frame))
-	for &pad, i in ee.pads {
+	inputs: [ee.MAX_PLAYERS]core.Net_Input
+	for &in_, i in inputs {
 		p := ps[i]
-		set := p.buttons
-		axes: [4]u8
+		in_.buttons = p.buttons
 		for f, j in ([4]f32{p.right.x, p.right.y, p.left.x, p.left.y}) {
-			axes[j] = u8((i32(math.round(f * 32767)) + 32768) >> 8)
+			in_.axes[j] = u8((i32(math.round(f * 32767)) + 32768) >> 8)
 		}
 		// The game walks with the left stick only, so d-pad presses (from
 		// the keyboard and NT_PRESS too) push it unless the stick is held.
-		if abs(i32(axes[2]) - 0x80) < 0x40 {
-			if .Left in set {axes[2] = 0x00}
-			if .Right in set {axes[2] = 0xff}
+		if abs(i32(in_.axes[2]) - 0x80) < 0x40 {
+			if .Left in in_.buttons {in_.axes[2] = 0x00}
+			if .Right in in_.buttons {in_.axes[2] = 0xff}
 		}
-		if abs(i32(axes[3]) - 0x80) < 0x40 {
-			if .Up in set {axes[3] = 0x00}
-			if .Down in set {axes[3] = 0xff}
+		if abs(i32(in_.axes[3]) - 0x80) < 0x40 {
+			if .Up in in_.buttons {in_.axes[3] = 0x00}
+			if .Down in in_.buttons {in_.axes[3] = 0xff}
 		}
-		pad.connected = p.connected || i < forced_players
-		pad.buttons = set
-		pad.axes = axes
+	}
+	// Netplay: this host's player 1 plays the session slot NT_NET_PLAYER;
+	// every pad takes the session's inputs.
+	if net_on {
+		got, ok := core.net_frame(vblank, inputs[0])
+		if !ok {
+			// Headless, the peer leaves once its last shot is taken.
+			if quit_at > 0 {os.exit(0)}
+			fmt.eprintln("net: session over")
+			os.exit(1)
+		}
+		copy(inputs[:], got[:ee.MAX_PLAYERS])
+	}
+	for &pad, i in ee.pads {
+		pad.connected = net_on ? i < NET_PLAYERS : ps[i].connected || i < forced_players
+		pad.buttons = inputs[i].buttons
+		pad.axes = inputs[i].axes
 		core.input_rumble(i, pad.small != 0, pad.large)
 	}
+}
+
+// NT_NET_PEER=host:port: rollback netplay (core net.odin) with that peer,
+// listening on NT_NET_BIND (default 0.0.0.0:7000) as session player
+// NT_NET_PLAYER (1 or 2), with NT_NET_DELAY frames of input delay (default
+// 2) and a desync check every NT_NET_HASH vblanks (default 60). Testing:
+// NT_NET_DROP=<percent> drops outgoing packets, NT_NET_LAG=<ms> delays them.
+// Both hosts must run the same build from the same boot and memory card.
+@(private = "file")
+NET_PLAYERS :: 2
+@(private = "file")
+net_on: bool
+@(private = "file")
+NET_LINGER :: 60
+@(private = "file")
+quit_at: int // host side: the vblank a headless netplay run exits at
+
+@(private = "file")
+net_init :: proc() {
+	peer, ok := os.lookup_env("NT_NET_PEER", context.temp_allocator)
+	if !ok {return}
+	num :: proc(name: string, def: int) -> int {
+		return strconv.parse_int(os.get_env(name, context.temp_allocator)) or_else def
+	}
+	cfg := core.Net_Config {
+		bind       = os.get_env("NT_NET_BIND", context.temp_allocator),
+		peer       = peer,
+		player     = num("NT_NET_PLAYER", 1) - 1,
+		players    = NET_PLAYERS,
+		delay      = num("NT_NET_DELAY", 2),
+		hash_every = num("NT_NET_HASH", 60),
+		drop       = num("NT_NET_DROP", 0),
+		lag        = time.Duration(num("NT_NET_LAG", 0)) * time.Millisecond,
+	}
+	if cfg.bind == "" {cfg.bind = "0.0.0.0:7000"}
+	if !core.net_start(cfg) {os.exit(1)}
+	net_on = true
+}
+
+@(private = "file")
+print_net :: proc() {
+	st := core.net_status()
+	fmt.eprintfln("net: vblank %d, ping %.1f ms, ahead %d, %d rollbacks (%d frames rerun), %d stalls, %d hashes compared, desync %d",
+		vblank, time.duration_milliseconds(st.ping), st.ahead, st.rollbacks, st.resimulated, st.stalls, st.hashes,
+		st.desync)
 }
 
 @(private = "file")

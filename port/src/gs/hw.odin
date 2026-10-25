@@ -671,7 +671,7 @@ hw_frame :: proc(psm, fbp, fbw, dbx, dby: u32, w, h: int) {
 
 	img: u32
 	acquired := false
-	if hw.window && vkc.swap != 0 && w > 0 && h > 0 {
+	if hw.window && !skip_present && vkc.swap != 0 && w > 0 && h > 0 {
 		r := vk.AcquireNextImageKHR(vkc.device, vkc.swap, max(u64), s.acquire, 0, &img)
 		if r == .ERROR_OUT_OF_DATE_KHR {
 			swap_create()

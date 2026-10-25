@@ -21,12 +21,12 @@ audio_init :: proc(headless: bool) {
 
 // Mix exactly one vblank: the game polls voice positions, so how far the
 // voices advance must not depend on the host. Core pads or drops on the
-// device side instead.
-audio_frame :: proc() {
+// device side instead. A netplay rerun mixes without pushing.
+audio_frame :: proc(push: bool) {
 	buf := make([][2]i16, AUDIO_FRAME, context.temp_allocator)
 	t := ee.prof_start()
 	ee.fmod_mix(([^]i16)(raw_data(buf))[:AUDIO_FRAME * 2])
 	ee.spu_mix(([^]i16)(raw_data(buf))[:AUDIO_FRAME * 2])
 	ee.prof_end(.MIX, t)
-	core.audio_push(buf)
+	if push {core.audio_push(buf)}
 }
