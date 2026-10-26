@@ -195,9 +195,12 @@ video_frame :: proc() {
 	// Netplay time sync stretches the frame while this host is ahead.
 	length := time.Second / time.Duration(pace)
 	length += time.Duration(f64(length) * f64(core.net_stretch()))
-	el := time.tick_since(last)
-	if el < length {time.sleep(length - el)}
-	last = time.tick_now()
+	// An absolute deadline: sleep overshoot must not add up, or the game runs
+	// under 60 Hz and the sound queue drains. Far behind, start again from now.
+	now := time.tick_now()
+	last = time.tick_add(last, length)
+	if time.tick_diff(last, now) > length {last = now}
+	if d := time.tick_diff(now, last); d > 0 {time.sleep(d)}
 }
 
 // NT_STATS=1: every STATS_FRAMES presented frames, host frame rate and the
@@ -222,7 +225,8 @@ print_stats :: proc() {
 		for p in cpu.Prof {
 			fmt.eprintf("  %v %.0f%%", p, 100 * f64(cpu.prof[p] - prof0[p]) / f64(max(tsc - tsc0, 1)))
 		}
-		fmt.eprintln()
+		a := core.audio_take_stats()
+		fmt.eprintfln("  audio dry %d dropped %d low %.0f ms", a.dry, a.dropped, a.low_ms)
 	}
 	t0, cyc0, idle0, tsc0, prof0 = now, cpu.state.cycles, kernel.idle_cycles, tsc, cpu.prof
 }
