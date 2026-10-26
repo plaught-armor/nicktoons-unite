@@ -8,15 +8,15 @@
 #       clock and EE/IOP RAM hashes (NT_DUMP_HASH=1, hashes.tsv) must match
 #       ref/hashes.tsv, and the frame-21400 shot
 #       must match ref/c_a.ppm (the GAME_OK shot, default GPU GS at scale 1).
-# std:  menu shots at 1000 and 2050. GPU GS and software GS (NT_SW=1) must be
+# std:  shots at 900 and 2050. GPU GS and software GS (NT_SW=1) must be
 #       bit-identical, and both must match ref/std_*.ppm. Only menus: 3D gameplay
 #       frames still differ slightly between hw and sw.
 # snap: save at 20000, load at 28300 (NT_SNAPTEST); shots 20001, 20002, 28400
 #       must match a plain run. Self-contained, no reference files.
 #
 # References and run output are game-derived and gitignored (tests/ref/, tests/out/).
-# Uses port/nicktoons_nbc (override with NT_BIN); build it first:
-#   cd port && odin build src -out:nicktoons_nbc -collection:ps=<ps-recomp checkout> -define:ENV_PREFIX=NT_ -use-separate-modules -o:speed -no-bounds-check
+# Uses port/nicktoons_nbc (override with NT_BIN); build it first with
+# port/build.sh.
 # record refuses to overwrite an existing reference unless FORCE=1.
 set -eu
 
@@ -84,9 +84,9 @@ game() {
 }
 
 std() {
-	run std_hw NT_SHOT=1000,2050 NT_PRESS="$P_STD"
-	run std_sw NT_SW=1 NT_SHOT=1000,2050 NT_PRESS="$P_STD"
-	for f in 1000 2050; do
+	run std_hw NT_SHOT=900,2050 NT_PRESS="$P_STD"
+	run std_sw NT_SW=1 NT_SHOT=900,2050 NT_PRESS="$P_STD"
+	for f in 900 2050; do
 		same "$OUT/std_hw/shot_$f.ppm" "$OUT/std_sw/shot_$f.ppm" "STD hw == sw $f"
 		if [ "$mode" = record ]; then
 			keep "$OUT/std_hw/shot_$f.ppm" "$REF/std_$f.ppm"

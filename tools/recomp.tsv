@@ -5,3 +5,4 @@ out	port/src/rec
 runtime	ps:ps2
 cycles_per_insn	1
 package_insns	40000
+words	tools/words.tsv

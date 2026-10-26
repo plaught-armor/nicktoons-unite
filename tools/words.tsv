@@ -1,0 +1,7 @@
+# Game code patches applied before recompiling: the word at `at` becomes `word`.
+at	word
+# Memory card messages ("Checking memory card...", loading, saving) are held
+# at least 5 seconds per step (lui $1, 0x40a0: 5.0f, stored to the message
+# object's timer at +0x9c in 0x332d30), which made every card access take
+# 10-20 s. Hold them 0.5 s instead (0x3f00: 0.5f).
+332f18	3c013f00
