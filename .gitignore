@@ -18,3 +18,4 @@ port/*.txt
 gamecontrollerdb.txt
 tests/ref/
 tests/out/
+port/memcard*/
