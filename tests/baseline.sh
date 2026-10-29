@@ -17,6 +17,9 @@
 # References and run output are game-derived and gitignored (tests/ref/, tests/out/).
 # Uses port/nicktoons_nbc (override with NT_BIN); build it first with
 # port/build.sh.
+# Native mode: set NT_NATIVE_FILE to the native_out file from tools/recomp.tsv.
+# Every run then loads it, and a run whose log lacks "native: N functions
+# from" fails.
 # record refuses to overwrite an existing reference unless FORCE=1.
 set -eu
 
@@ -40,6 +43,12 @@ mkdir -p "$REF" "$OUT"
 
 fail=0
 
+if [ -n "${NT_NATIVE_FILE:-}" ]; then
+	NT_NATIVE_FILE=$(cd "$(dirname "$NT_NATIVE_FILE")" && pwd)/$(basename "$NT_NATIVE_FILE")
+	[ -r "$NT_NATIVE_FILE" ] || { echo "missing $NT_NATIVE_FILE" >&2; exit 2; }
+	export NT_NATIVE_FILE
+fi
+
 # run NAME ENV...: fresh run dir and empty memcard dir, headless, cwd = run dir.
 run() {
 	name=$1; shift
@@ -49,6 +58,10 @@ run() {
 	echo "run $name" >&2
 	# NT_HEADLESS also ignores every real controller, which would merge with NT_PRESS input.
 	(cd "$dir" && env NT_MC="$dir/mc" NT_HEADLESS=1 "$@" "$BIN" > run.log 2>&1)
+	if [ -n "${NT_NATIVE_FILE:-}" ] && ! grep -Eq '^native: [0-9]+ functions from' "$dir/run.log"; then
+		echo "FAIL $name: native code not loaded"
+		fail=$((fail + 1))
+	fi
 }
 
 # same A B LABEL: byte compare, report, count failures.

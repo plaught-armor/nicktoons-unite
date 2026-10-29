@@ -19,3 +19,4 @@ gamecontrollerdb.txt
 tests/ref/
 tests/out/
 port/memcard*/
+port/native_*.bin
