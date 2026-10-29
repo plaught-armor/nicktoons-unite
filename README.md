@@ -36,8 +36,8 @@ Unpack your disc image into `disc/` at the repository root:
 7z x "/path/to/Nicktoons Unite!.iso" -odisc
 ```
 
-`disc/` must then hold `SLUS_212.84`, `DATA.ISO`, `MODULES/` and
-`SYSTEM.CNF`.
+`disc/` must then hold `SLUS_212.84`, `DATA.ISO`, `DUMMY.DAT`, `MODULES/`
+and `SYSTEM.CNF`.
 
 ## Building
 
@@ -71,7 +71,8 @@ NT_NATIVE_FILE=port/native_x64.bin ./port/nicktoons
 
 The port finds `disc/` relative to its own location, so it starts from any
 directory; a path to `SLUS_212.84` as the first argument overrides that.
-`NT_NATIVE_FILE` runs the x86-64 code from step 2 in place of the Odin
+`NT_NATIVE_FILE` is relative to the working directory, so from elsewhere
+give its full path. It runs the x86-64 code from step 2 in place of the Odin
 functions and is the faster way to play; without it the Odin code runs.
 Memory card saves go to `memcard0/` and `memcard1/` in the working directory.
 
