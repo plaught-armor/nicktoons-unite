@@ -9,8 +9,8 @@
 #   port/nicktoons-debug. Unoptimized (-o:none) builds run the generated
 #   code too slowly to play, so debug keeps -o:speed.
 #
-# PS_RECOMP overrides the ps-recomp checkout; port/src/rec must already be
-# generated (see tools/recomp.tsv).
+# PS_RECOMP overrides the ps-recomp checkout (default: the ps-recomp
+# submodule); port/src/rec must already be generated (see tools/recomp.tsv).
 set -e
 cd "$(dirname "$0")"
 PS_RECOMP=${PS_RECOMP:-../ps-recomp}

@@ -18,5 +18,6 @@ port/*.txt
 gamecontrollerdb.txt
 tests/ref/
 tests/out/
-port/memcard*/
+memcard*/
 port/native_*.bin
+/recomp-bin

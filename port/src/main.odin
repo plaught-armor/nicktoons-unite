@@ -13,6 +13,8 @@ import iop "ps:ps2/iop"
 import mem "ps:ps2/mem"
 import "rec"
 
+// Relative to the directory of the executable, so the game starts from any
+// working directory.
 ELF_PATH :: "../disc/SLUS_212.84"
 
 // Read the ELF at path and copy its PT_LOAD segments into RAM. Exits on a
@@ -33,7 +35,21 @@ load_elf :: proc(path: string) -> u32 {
 }
 
 main :: proc() {
-	path := len(os.args) > 1 ? os.args[1] : ELF_PATH
+	path: string
+	if len(os.args) > 1 {
+		path = os.args[1]
+	} else {
+		dir, err := os.get_executable_directory(context.allocator)
+		if err != nil {
+			fmt.eprintfln("cannot find the executable directory: %v", err)
+			os.exit(1)
+		}
+		path, err = filepath.join({dir, ELF_PATH})
+		if err != nil {
+			fmt.eprintfln("cannot build the disc path: %v", err)
+			os.exit(1)
+		}
+	}
 	iop.disc_dir = filepath.dir(path)
 	ps2.init()
 	if !host.platform_init("Nicktoons Unite!") {os.exit(1)}
