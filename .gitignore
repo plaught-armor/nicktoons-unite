@@ -5,7 +5,6 @@ port/src/rec/
 port/nicktoons
 port/nicktoons-debug
 port/*.mcd
-__pycache__/
 build/
 port/nicktoons_*
 *.o
@@ -14,7 +13,6 @@ port/nicktoons_*
 *.ppm
 *.png
 /fm.txt
-port/*.txt
 gamecontrollerdb.txt
 tests/ref/
 tests/out/

@@ -17,6 +17,7 @@ machine.
 - Vulkan 1.3 GPU and driver (the GS renderer; `NT_SW=1` uses the software
   renderer instead)
 - `7z` (p7zip) to unpack the disc image
+- About 10 GB of free RAM to build the port (step 3)
 
 ## Setup
 
@@ -51,7 +52,7 @@ From the repository root:
 #    port/native_x64.bin (x86-64 machine code).
 ./recomp-bin tools/recomp.tsv
 
-# 3. Build the port: port/nicktoons.
+# 3. Build the port: port/nicktoons. Takes a few minutes.
 port/build.sh
 ```
 
@@ -81,7 +82,7 @@ Settings are environment variables:
 | Variable | Effect |
 |---|---|
 | `NT_NATIVE_FILE` | x86-64 code file to run (see above) |
-| `NT_SCALE` | GS render scale, 1 to 8 |
+| `NT_SCALE` | GS render scale, 1 to 8, default 3 |
 | `NT_SW=1` | software GS renderer |
 | `NT_PLAYERS` | number of connected pads, 1 to 4 (multitap) |
 | `NT_STATS=1` | print frame and audio timing |
