@@ -4,15 +4,19 @@
 #   tests/baseline.sh record [game|std|snap|all]   write reference outputs to tests/ref/
 #   tests/baseline.sh check  [game|std|snap|all]   compare a fresh run against tests/ref/
 #
-# game: one 22000-frame headless run of the GAME press script. Per-frame guest
+# game: one 22000-vblank headless run of the GAME press script. Per-frame guest
 #       clock and EE/IOP RAM hashes (NT_DUMP_HASH=1, hashes.tsv) must match
-#       ref/hashes.tsv, and the frame-21400 shot
+#       ref/hashes.tsv, and the vblank-21400 shot
 #       must match ref/c_a.ppm (the GAME_OK shot, default GPU GS at scale 1).
 # std:  shots at 900 and 2050. GPU GS and software GS (NT_SW=1) must be
 #       bit-identical, and both must match ref/std_*.ppm. Only menus: 3D gameplay
 #       frames still differ slightly between hw and sw.
 # snap: save at 20000, load at 28300 (NT_SNAPTEST); shots 20001, 20002, 28400
 #       must match a plain run. Self-contained, no reference files.
+#
+# Shot numbers (NT_SHOT) count vblanks, like NT_FRAMES; NT_SNAPTEST and the
+# hashes.tsv rows count presented frames. The display is on from the first
+# vblank, so here the two counts are the same.
 #
 # References and run output are game-derived and gitignored (tests/ref/, tests/out/).
 # Uses port/nicktoons_nbc (override with NT_BIN); build it first with
